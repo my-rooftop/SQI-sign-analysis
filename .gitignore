@@ -1,0 +1,33 @@
+# --- Firmware build outputs ---
+objdir-*/
+.dep/
+*.o
+*.lst
+*.elf
+*.map
+*.lss
+*.sym
+*.bin
+*.eep
+*.hex
+
+# --- Host tool binaries ---
+response_split_host
+response_compact_host
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# --- Capture / analysis outputs ---
+*.npz
+/tmp/sqisign_response_*.txt
+
+# --- Editor / OS cruft ---
+*.bak
+*.orig
+*~
+*.swp
+.DS_Store
