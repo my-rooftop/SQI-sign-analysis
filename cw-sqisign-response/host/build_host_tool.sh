@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SQ_ROOT="$APP_DIR/vendor/sqisign"
+HOST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR="$(cd "$HOST_DIR/.." && pwd)"
+SQ_ROOT="$PKG_DIR/vendor/sqisign"
 
-cd "$APP_DIR"
+cd "$HOST_DIR"
 
+# firmware/cw_randombytes.c is shared with the target build on purpose: host and
+# board then draw from the same deterministic experiment RNG.
 gcc -O2 -g \
   -DMINI_GMP -DGMP_LIMB_BITS=64 -DRADIX_64 \
   -DSQISIGN_BUILD_TYPE_REF -DSQISIGN_GF_IMPL_REF -DSQISIGN_VARIANT=lvl1 \
@@ -31,7 +34,7 @@ gcc -O2 -g \
   -I"$SQ_ROOT/src/verification/ref/include" \
   -I"$SQ_ROOT/src/verification/ref/lvlx" \
   response_split_host.c \
-  cw_randombytes.c \
+  "$PKG_DIR/firmware/cw_randombytes.c" \
   "$SQ_ROOT/src/common/generic/tools.c" \
   "$SQ_ROOT/src/common/generic/fips202.c" \
   "$SQ_ROOT/src/common/generic/mem.c" \

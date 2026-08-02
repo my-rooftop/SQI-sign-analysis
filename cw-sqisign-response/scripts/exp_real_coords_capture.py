@@ -8,7 +8,7 @@ window. Ground-truth coord0..3 are read back from the board.
 Output npz: traces (N,S), records (hex strings), interval_ns.
 Analyse separately (segment the 6 pulses on Ch B, per-coord SNR / recovery).
 
-  ~/.cwvenv/bin/python3 exp_real_coords_capture.py --traces 300 --samples 760000
+  ~/.cwvenv/bin/python3 scripts/exp_real_coords_capture.py --traces 300 --samples 760000
 """
 import argparse, ctypes, json, pathlib, random, subprocess, sys, time
 import numpy as np
@@ -18,8 +18,11 @@ from picosdk.ps3000a import ps3000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok
 
 APP = pathlib.Path(__file__).resolve().parent
-HOST = APP / "response_split_host"
-HEX = APP / "simpleserial-sqisign-response-CW308_STM32F4.hex"
+PKG = APP.parent
+FW_DIR = PKG / "firmware"
+HOST = PKG / "host" / "response_split_host"
+HOST_BUILD = PKG / "host" / "build_host_tool.sh"
+HEX = FW_DIR / "simpleserial-sqisign-response-CW308_STM32F4.hex"
 VECTOR = pathlib.Path("/tmp/sqisign_response_vec.txt")
 CHUNK = 48
 
@@ -116,7 +119,7 @@ def main():
     ap.add_argument("--out", default="/tmp/sqisign_real_coords.npz")
     args = ap.parse_args()
     if not HEX.exists(): sys.exit("firmware missing (build mode 6)")
-    if not HOST.exists(): run([str(APP / "build_host_tool.sh")])
+    if not HOST.exists(): run([str(HOST_BUILD)])
 
     def pulse_edges(trig, thr=1000):
         hi = trig > thr

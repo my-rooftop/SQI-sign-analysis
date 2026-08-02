@@ -9,8 +9,8 @@ fires DURING finalize (near the end of the compute). PicoScope must wait indefin
 (autoTrigger=0) because the trigger arrives ~11-12 s after arming. Ground-truth
 coord0..3 are read back.
 
-  ~/.cwvenv/bin/python3 exp_target_finalize.py --traces 3000 --samples 1300000 --timebase 4
-  ~/.cwvenv/bin/python3 exp_target_finalize.py --probe    # 2 traces, size the window
+  ~/.cwvenv/bin/python3 scripts/exp_target_finalize.py --traces 3000 --samples 1300000 --timebase 4
+  ~/.cwvenv/bin/python3 scripts/exp_target_finalize.py --probe    # 2 traces, size the window
 """
 import argparse, ctypes, json, pathlib, random, subprocess, sys, time
 import numpy as np
@@ -20,8 +20,11 @@ from picosdk.ps3000a import ps3000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok
 
 APP = pathlib.Path(__file__).resolve().parent
-HOST = APP / "response_split_host"
-HEX = APP / "simpleserial-sqisign-response-CW308_STM32F4.hex"
+PKG = APP.parent
+FW_DIR = PKG / "firmware"
+HOST = PKG / "host" / "response_split_host"
+HOST_BUILD = PKG / "host" / "build_host_tool.sh"
+HEX = FW_DIR / "simpleserial-sqisign-response-CW308_STM32F4.hex"
 VECTOR = pathlib.Path("/tmp/sqisign_response_vec.txt")
 CHUNK = 48
 
@@ -113,7 +116,7 @@ def main():
     a = ap.parse_args()
     if a.probe: a.traces = 2
     if not HEX.exists(): sys.exit("firmware missing (build mode 2)")
-    if not HOST.exists(): run([str(APP / "build_host_tool.sh")])
+    if not HOST.exists(): run([str(HOST_BUILD)])
 
     def pulse_edges(trig, thr=1000):
         hi = trig > thr

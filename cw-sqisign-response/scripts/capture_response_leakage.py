@@ -12,8 +12,11 @@ from chipwhisperer.capture.api.programmers import STM32FProgrammer
 
 
 APP = pathlib.Path(__file__).resolve().parent
-HOST = APP / "response_split_host"
-HEX = APP / "simpleserial-sqisign-response-CW308_STM32F4.hex"
+PKG = APP.parent
+FW_DIR = PKG / "firmware"
+HOST = PKG / "host" / "response_split_host"
+HOST_BUILD = PKG / "host" / "build_host_tool.sh"
+HEX = FW_DIR / "simpleserial-sqisign-response-CW308_STM32F4.hex"
 VECTOR = pathlib.Path("/tmp/sqisign_response_vec.txt")
 CHUNK = 48
 
@@ -111,9 +114,9 @@ def main():
     args = parser.parse_args()
 
     if not args.skip_build:
-        run(["make", "PLATFORM=CW308_STM32F4", "RESP_TRIGGER_MODE=1"], cwd=APP)
+        run(["make", "PLATFORM=CW308_STM32F4", "RESP_TRIGGER_MODE=1"], cwd=FW_DIR)
         if not HOST.exists():
-            run([APP / "build_host_tool.sh"])
+            run([HOST_BUILD])
 
     scope = cw.scope()
     target = cw.target(scope)

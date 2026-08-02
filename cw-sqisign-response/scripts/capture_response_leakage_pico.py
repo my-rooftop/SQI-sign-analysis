@@ -24,8 +24,8 @@ capture the serialization region (command 's'), which raises the trigger each ti
 Use --compute-each (with a mode-0 build) to trigger the whole core instead.
 
 Usage:
-  ~/.cwvenv/bin/python3 capture_response_leakage_pico.py --traces 20
-  ~/.cwvenv/bin/python3 capture_response_leakage_pico.py --traces 5 --samples 700000
+  ~/.cwvenv/bin/python3 scripts/capture_response_leakage_pico.py --traces 20
+  ~/.cwvenv/bin/python3 scripts/capture_response_leakage_pico.py --traces 5 --samples 700000
 """
 
 import argparse
@@ -50,8 +50,11 @@ from picosdk.functions import adc2mV, assert_pico_ok
 
 
 APP = pathlib.Path(__file__).resolve().parent
-HOST = APP / "response_split_host"
-HEX = APP / "simpleserial-sqisign-response-CW308_STM32F4.hex"
+PKG = APP.parent
+FW_DIR = PKG / "firmware"
+HOST = PKG / "host" / "response_split_host"
+HOST_BUILD = PKG / "host" / "build_host_tool.sh"
+HEX = FW_DIR / "simpleserial-sqisign-response-CW308_STM32F4.hex"
 VECTOR = pathlib.Path("/tmp/sqisign_response_vec.txt")
 CHUNK = 48
 
@@ -227,10 +230,11 @@ def main():
 
     if not HEX.exists():
         print(f"ERROR: firmware not found: {HEX}\n"
-              f"Build with: make PLATFORM=CW308_STM32F4 RESP_TRIGGER_MODE=1", file=sys.stderr)
+              f"Build with: make -C {FW_DIR} PLATFORM=CW308_STM32F4 RESP_TRIGGER_MODE=1",
+              file=sys.stderr)
         sys.exit(1)
     if not HOST.exists():
-        run([str(APP / "build_host_tool.sh")])
+        run([str(HOST_BUILD)])
 
     cap_cmd = "c" if args.compute_each else "s"
 
