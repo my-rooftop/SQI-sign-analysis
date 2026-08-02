@@ -70,12 +70,32 @@ def ss(target, cmd, data=b"", n=1, timeout_ms=8000):
 
 
 def gen_response(rng):
+    """Synthetic response: right bit-lengths, but uniform-random contents, always
+    positive, denom=1. A verification against 500 real responses showed this
+    matches real coords on bit-length and LS-limb Hamming weight, but NOT on sign
+    (real coords are ~50% negative) or denom (~2/3 are denom=2). Prefer --values
+    with real precomputed responses; keep this only as a no-host-tool fallback."""
     def val(lo, hi):
         b = rng.randint(lo, hi)
         return (1 << (b - 1)) | rng.getrandbits(b - 1)
     return {"lattice_content": val(*BL["lattice_content"]), "denom": 1,
             "coord0": val(*BL["coord0"]), "coord1": val(*BL["coord1"]),
             "coord2": val(*BL["coord2"]), "coord3": val(*BL["coord3"])}
+
+
+def load_real_responses(path):
+    """Read precomputed real responses from `host/response_split_host dump-responses`.
+    One line per response: content denom coord0 coord1 coord2 coord3 (signed hex)."""
+    out = []
+    with open(path) as f:
+        for line in f:
+            t = line.split()
+            if len(t) != 6:
+                continue
+            out.append({"lattice_content": int(t[0], 16), "denom": int(t[1], 16),
+                        "coord0": int(t[2], 16), "coord1": int(t[3], 16),
+                        "coord2": int(t[4], 16), "coord3": int(t[5], 16)})
+    return out
 
 
 def load_known(target, r):
@@ -226,6 +246,9 @@ def main():
     p.add_argument("--out", required=True, help="output directory")
     p.add_argument("--real", action="store_true",
                    help="run the true core per trace (~12 s) instead of cmd 'k'")
+    p.add_argument("--values", type=pathlib.Path, default=None,
+                   help="file of precomputed REAL responses (host dump-responses); "
+                        "injected via 'k' -- real distribution at the fast serialize speed")
     p.add_argument("--samples", type=int, default=400000)
     p.add_argument("--timebase", type=int, default=8000)
     p.add_argument("--pre", type=int, default=2000)
@@ -257,6 +280,14 @@ def main():
     print(f"output   : {out}\n"
           f"budget   : {a.traces:,} traces x {L:,} samples x 2 B = {need_gb:.1f} GB", flush=True)
 
+    real_vals = None
+    if a.values:
+        real_vals = load_real_responses(a.values)
+        if len(real_vals) < a.traces:
+            sys.exit(f"--values has {len(real_vals):,} responses but --traces is "
+                     f"{a.traces:,}; generate more with dump-responses")
+        print(f"values   : {len(real_vals):,} real responses from {a.values}", flush=True)
+
     T = np.lib.format.open_memmap(out / "traces.npy", mode="w+",
                                   dtype=np.int16, shape=(a.traces, L))
     labels = (out / "labels.jsonl").open("w", buffering=1)
@@ -286,13 +317,13 @@ def main():
         pico = Pico3000E(a.samples, a.timebase, a.pre, a.cha_mv, a.chb_mv, a.resolution)
         pico.set_trigger(1000, auto_us=5_000_000)
 
-        def source_new_value():
+        def source_new_value(i):
             """Put a fresh response into last_resp; return ground truth."""
             if a.real:
                 if ss(target, "c", b"", 1, 900000) != bytearray([1]):
                     raise RuntimeError("compute failed")
                 return read_board_response(target)
-            r = gen_response(rng)
+            r = real_vals[i] if real_vals is not None else gen_response(rng)
             load_known(target, r)
             return r
 
@@ -305,7 +336,7 @@ def main():
                 raise RuntimeError("serialize ack failed")
             return pa, pb, ov
 
-        source_new_value()
+        source_new_value(0)
         for _ in range(WARMUP_CAPTURES):
             capture()
         print(f"warm-up: {WARMUP_CAPTURES} captures discarded (AC settle)", flush=True)
@@ -332,7 +363,9 @@ def main():
                 "chb_mv": pico.chb_mv, "adc_max": pico.maxADC.value,
                 "mv_per_code": pico.cha_mv / pico.maxADC.value,
                 "capture_samples": a.samples, "timebase": a.timebase, "pre": a.pre,
-                "source": "real" if a.real else "known", "seed": a.seed,
+                "source": ("real_core" if a.real else
+                           "real_values" if real_vals is not None else "synthetic"),
+                "values_file": str(a.values) if a.values else None, "seed": a.seed,
                 "platform": a.platform, "trigger_mode": 6, "target_traces": a.traces}
         (out / "meta.json").write_text(json.dumps(meta, indent=2))
         print(json.dumps(meta), flush=True)
@@ -342,7 +375,7 @@ def main():
             if deadline and time.time() > deadline:
                 print(f"stopping: --max-hours reached at trace {i}", flush=True)
                 break
-            truth = source_new_value()
+            truth = source_new_value(i)
             pa, pb, ov = capture()
             rise, fall = pulse_edges_raw(pb, pico.trig_thr_raw)
             if len(rise) < 6 or len(fall) < 6:

@@ -117,6 +117,16 @@ static void print_ibz_line(const ibz_t *x)
     puts(tmp);
 }
 
+static void print_ibz_inline(const ibz_t *x, char sep)
+{
+    char tmp[2048];
+    if (!ibz_convert_to_str(x, tmp, 16)) {
+        die("integer conversion failed");
+    }
+    fputs(tmp, stdout);
+    putchar(sep);
+}
+
 static void print_ideal(const quat_left_ideal_t *ideal)
 {
     print_ibz_line(&ideal->norm);
@@ -417,6 +427,65 @@ static int cmd_sample(unsigned long count)
     return 0;
 }
 
+/* Compute N real responses and print each on one line as space-separated hex:
+   "content denom coord0 coord1 coord2 coord3".  This is exactly the token order
+   the board's cmd 'k' (response_set_known) parses, so the capture host can inject
+   genuine response values -- real signs, real denom, real limb structure -- while
+   still measuring only the fast serialization path (no ~12 s core on the board). */
+static int cmd_dump_responses(unsigned long count)
+{
+    public_key_t pk;
+    secret_key_t sk;
+    signature_t sig;
+    ec_curve_t Ecom;
+    ec_basis_t basis_even_com;
+    quat_left_ideal_t lideal_commit;
+    quat_left_ideal_t lideal_chall_two;
+    quat_alg_elem_t resp;
+    ibz_t lattice_content;
+    unsigned char msg[32] = { 0 };
+
+    seed_rng();
+    for (unsigned long sample = 0; sample < count; sample++) {
+        memset(&pk, 0, sizeof(pk));
+        memset(&sig, 0, sizeof(sig));
+        secret_key_init(&sk);
+        ec_curve_init(&Ecom);
+        quat_left_ideal_init(&lideal_commit);
+        quat_left_ideal_init(&lideal_chall_two);
+        quat_alg_elem_init(&resp);
+        ibz_init(&lattice_content);
+
+        if (!protocols_keygen(&pk, &sk)) {
+            die("keygen failed");
+        }
+        if (!commit(&Ecom, &basis_even_com, &lideal_commit)) {
+            die("commit failed");
+        }
+        hash_to_challenge(&sig.chall_coeff, &pk, &Ecom, msg, sizeof(msg));
+        compute_challenge_ideal_signature(&lideal_chall_two, &sig, &sk);
+        compute_response_quat_element_host(&resp, &lattice_content, &sk, &lideal_chall_two, &lideal_commit);
+
+        print_ibz_inline(&lattice_content, ' ');
+        print_ibz_inline(&resp.denom, ' ');
+        print_ibz_inline(&resp.coord[0], ' ');
+        print_ibz_inline(&resp.coord[1], ' ');
+        print_ibz_inline(&resp.coord[2], ' ');
+        print_ibz_inline(&resp.coord[3], '\n');
+
+        ibz_finalize(&lattice_content);
+        quat_alg_elem_finalize(&resp);
+        quat_left_ideal_finalize(&lideal_chall_two);
+        quat_left_ideal_finalize(&lideal_commit);
+        secret_key_finalize(&sk);
+
+        if ((sample + 1) % 1000 == 0) {
+            fprintf(stderr, "dumped %lu/%lu\n", sample + 1, count);
+        }
+    }
+    return 0;
+}
+
 static void parse_response_or_die(quat_alg_elem_t *resp, ibz_t *lattice_content, char *text)
 {
     char *cursor = text;
@@ -650,10 +719,14 @@ int main(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "sample") == 0) {
         return cmd_sample(strtoul(argv[2], NULL, 10));
     }
+    if (argc == 3 && strcmp(argv[1], "dump-responses") == 0) {
+        return cmd_dump_responses(strtoul(argv[2], NULL, 10));
+    }
     fprintf(stderr, "usage: %s gen > vector.txt\n", argv[0]);
     fprintf(stderr, "       %s verify vector.txt board_response.txt\n", argv[0]);
     fprintf(stderr, "       %s compute-vector vector.txt > response.txt\n", argv[0]);
     fprintf(stderr, "       %s bench-vector vector.txt N\n", argv[0]);
     fprintf(stderr, "       %s sample N > response_stats.txt\n", argv[0]);
+    fprintf(stderr, "       %s dump-responses N > responses.txt\n", argv[0]);
     return 1;
 }
