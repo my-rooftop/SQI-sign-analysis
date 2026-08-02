@@ -85,18 +85,24 @@ static void normalize_response_triggered(quat_alg_elem_t *x)
     ibz_div(&x->denom, &r, &x->denom, &gcd);
     response_profile.normalize_gcd_cycles = cycles_since(t);
 
-#if RESP_TRIGGER_MODE == 3
+#if RESP_TRIGGER_MODE == 3 || RESP_TRIGGER_MODE == 7
     trigger_high();
 #endif
     t = response_cycles_read();
     ibz_div(&x->coord[0], &r, &x->coord[0], &gcd);
     response_profile.normalize_coord0_div_cycles = cycles_since(t);
-#if RESP_TRIGGER_MODE == 3
+#if RESP_TRIGGER_MODE == 3 || RESP_TRIGGER_MODE == 7
     trigger_low();
 #endif
     t = response_cycles_read();
     for (int i = 1; i < 4; i++) {
+#if RESP_TRIGGER_MODE == 7
+        trigger_high();
+#endif
         ibz_div(&x->coord[i], &r, &x->coord[i], &gcd);
+#if RESP_TRIGGER_MODE == 7
+        trigger_low();
+#endif
     }
     response_profile.normalize_coord_rest_div_cycles = cycles_since(t);
 
@@ -177,7 +183,28 @@ static int sample_from_ball_triggered(quat_alg_elem_t *res,
     trigger_high();
 #endif
     t = response_cycles_read();
+#if RESP_TRIGGER_MODE == 7
+    /* Per-coordinate materialization: coord[i] = sum_j basis[i][j]*x[j], one trigger
+       pulse per coordinate (res->coord is not aliased with basis or x here). Together
+       with the per-coord division pulses in normalize, one capture yields 8 aligned
+       segments: materialize coord0..3, then divide coord0..3. */
+    {
+        ibz_t prod;
+        ibz_init(&prod);
+        for (int i = 0; i < 4; i++) {
+            trigger_high();
+            ibz_set(&res->coord[i], 0);
+            for (int j = 0; j < 4; j++) {
+                ibz_mul(&prod, &lattice->basis[i][j], &x[j]);
+                ibz_add(&res->coord[i], &res->coord[i], &prod);
+            }
+            trigger_low();
+        }
+        ibz_finalize(&prod);
+    }
+#else
     ibz_mat_4x4_eval(&res->coord, &lattice->basis, &x);
+#endif
     ibz_copy(&res->denom, &lattice->denom);
     normalize_response_triggered(res);
     response_profile.sample_finalize_cycles = cycles_since(t);

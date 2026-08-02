@@ -158,6 +158,22 @@ static void serialize_response(const ibz_t *lattice_content,
 {
     outlen = 0;
     outbuf[0] = '\0';
+#if RESP_TRIGGER_MODE == 6
+    /* Per-value trigger pulses: one pulse per serialized big integer, so a single
+       PicoScope capture yields 6 aligned segments (content, denom, coord0..3). */
+    append_str("1\n");
+    if (do_trigger) trigger_high();
+    append_ibz(lattice_content);
+    if (do_trigger) trigger_low();
+    if (do_trigger) trigger_high();
+    append_ibz(&resp->denom);
+    if (do_trigger) trigger_low();
+    for (int i = 0; i < 4; i++) {
+        if (do_trigger) trigger_high();
+        append_ibz(&resp->coord[i]);
+        if (do_trigger) trigger_low();
+    }
+#else
     if (do_trigger) {
         trigger_high();
     }
@@ -170,6 +186,7 @@ static void serialize_response(const ibz_t *lattice_content,
     if (do_trigger) {
         trigger_low();
     }
+#endif
 }
 
 #if SS_VER == SS_VER_2_1
@@ -341,6 +358,35 @@ uint8_t response_set_calibration(uint8_t *buf, uint8_t len)
     return 0;
 }
 
+/* Load a full KNOWN response into last_resp from inbuf hex tokens:
+   [lattice_content, denom, coord0, coord1, coord2, coord3].
+   Lets the host profile the serialization of realistic multi-limb coordinate
+   values at high throughput without running the ~12 s response core. */
+#if SS_VER == SS_VER_2_1
+uint8_t response_set_known(uint8_t cmd, uint8_t scmd, uint8_t len, uint8_t *buf)
+#else
+uint8_t response_set_known(uint8_t *buf, uint8_t len)
+#endif
+{
+    (void)buf; (void)len;
+#if SS_VER == SS_VER_2_1
+    (void)cmd; (void)scmd;
+#endif
+    const char *cursor = inbuf;
+    uint8_t ok = 0;
+    if (parse_ibz(&last_lattice_content, &cursor) &&
+        parse_ibz(&last_resp.denom, &cursor) &&
+        parse_ibz(&last_resp.coord[0], &cursor) &&
+        parse_ibz(&last_resp.coord[1], &cursor) &&
+        parse_ibz(&last_resp.coord[2], &cursor) &&
+        parse_ibz(&last_resp.coord[3], &cursor)) {
+        last_valid = 1;
+        ok = 1;
+    }
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
 #if SS_VER == SS_VER_2_1
 uint8_t response_seed_rng(uint8_t cmd, uint8_t scmd, uint8_t len, uint8_t *buf)
 #else
@@ -473,6 +519,7 @@ int main(void)
     simpleserial_addcmd('c', 0, response_compute);
     simpleserial_addcmd('q', 4, response_set_calibration);
     simpleserial_addcmd('n', 16, response_seed_rng);
+    simpleserial_addcmd('k', 0, response_set_known);
     simpleserial_addcmd('s', 0, response_serialize_last);
     simpleserial_addcmd('g', 2, response_read);
     simpleserial_addcmd('l', 0, response_len);
