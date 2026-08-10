@@ -265,6 +265,73 @@ static int cmd_gen(void)
     return 0;
 }
 
+/* Attack-faithful generator (RESEARCH_MEMORY finding #1): ONE fixed secret key
+   Isk, then a fresh commitment (Icom) and challenge (Ichl) per trace, exactly the
+   manuscript's "multiple fresh signatures under one fixed Isk" scenario. The seed
+   varies naturally as the RNG advances across commits; the message varies per trace
+   and feeds hash_to_challenge. Emits N blocks; each block is a "# trace i" comment
+   followed by the three board-input ideals (secret, challenge, commit). The capture
+   host strips comment lines and sends 54 hex tokens per trace. */
+static int cmd_dump_fixedkey(unsigned long count)
+{
+    public_key_t pk;
+    secret_key_t sk;
+    ec_curve_t Ecom;
+    ec_basis_t basis_even_com;
+    quat_left_ideal_t lideal_commit;
+    quat_left_ideal_t lideal_chall_two;
+
+    memset(&pk, 0, sizeof(pk));
+    secret_key_init(&sk);
+
+    seed_rng();
+    if (!protocols_keygen(&pk, &sk)) {          /* fix Isk once */
+        die("keygen failed");
+    }
+
+    for (unsigned long i = 0; i < count; i++) {
+        signature_t sig;
+        memset(&sig, 0, sizeof(sig));
+        unsigned char msg[32] = { 0 };          /* message varies per trace */
+        for (int b = 0; b < 8; b++) {
+            msg[b] = (unsigned char)((i >> (8 * b)) & 0xff);
+        }
+
+        int ok = 0;
+        for (int attempt = 0; attempt < 64 && !ok; attempt++) {
+            ec_curve_init(&Ecom);
+            quat_left_ideal_init(&lideal_commit);
+            quat_left_ideal_init(&lideal_chall_two);
+            if (commit(&Ecom, &basis_even_com, &lideal_commit)) {
+                hash_to_challenge(&sig.chall_coeff, &pk, &Ecom, msg, sizeof(msg));
+                compute_challenge_ideal_signature(&lideal_chall_two, &sig, &sk);
+                ok = 1;
+            } else {
+                quat_left_ideal_finalize(&lideal_chall_two);
+                quat_left_ideal_finalize(&lideal_commit);
+            }
+        }
+        if (!ok) {
+            die("commit failed repeatedly");
+        }
+
+        printf("# trace %lu\n", i);
+        print_ideal(&sk.secret_ideal);          /* fixed Isk */
+        print_ideal(&lideal_chall_two);         /* fresh Ichl */
+        print_ideal(&lideal_commit);            /* fresh Icom */
+
+        quat_left_ideal_finalize(&lideal_chall_two);
+        quat_left_ideal_finalize(&lideal_commit);
+
+        if ((i + 1) % 100 == 0) {
+            fprintf(stderr, "fixedkey %lu/%lu\n", i + 1, count);
+        }
+    }
+
+    secret_key_finalize(&sk);
+    return 0;
+}
+
 static unsigned ibz_bitlen_via_string(const ibz_t *x)
 {
     char tmp[2048];
@@ -722,11 +789,15 @@ int main(int argc, char **argv)
     if (argc == 3 && strcmp(argv[1], "dump-responses") == 0) {
         return cmd_dump_responses(strtoul(argv[2], NULL, 10));
     }
+    if (argc == 3 && strcmp(argv[1], "dump-fixedkey") == 0) {
+        return cmd_dump_fixedkey(strtoul(argv[2], NULL, 10));
+    }
     fprintf(stderr, "usage: %s gen > vector.txt\n", argv[0]);
     fprintf(stderr, "       %s verify vector.txt board_response.txt\n", argv[0]);
     fprintf(stderr, "       %s compute-vector vector.txt > response.txt\n", argv[0]);
     fprintf(stderr, "       %s bench-vector vector.txt N\n", argv[0]);
     fprintf(stderr, "       %s sample N > response_stats.txt\n", argv[0]);
     fprintf(stderr, "       %s dump-responses N > responses.txt\n", argv[0]);
+    fprintf(stderr, "       %s dump-fixedkey N > fixedkey_triples.txt\n", argv[0]);
     return 1;
 }
