@@ -100,6 +100,31 @@ def snr_by_class(traces, labels, min_class=5):
     return signal / noise
 
 
+def classify_limb(values):
+    """What kind of label a limb's observed values actually form.
+
+    A limb above the value's magnitude is sign extension: it is 0x00000000 or
+    0xffffffff depending only on the sign of the coordinate. Across traces it is
+    not constant, but it is a one-bit sign label wearing a 32-bit limb's clothes,
+    and every sign-extension limb of the same coordinate carries the identical
+    label. Correlating against it finds the sign leak -- strongly -- and reports
+    the same peak sample for all of them, which would otherwise be mistaken for
+    per-limb Hamming-weight recovery.
+
+    Returns one of "constant", "sign", "informative".
+    """
+    v = np.asarray(values, dtype=np.uint64)
+    distinct = np.unique(v)
+    if distinct.size <= 1:
+        return "constant"
+    if np.all((v == 0) | (v == 0xFFFFFFFF)):
+        return "sign"
+    # a handful of distinct values is a near-sign label too, not a HW label
+    if distinct.size <= 3:
+        return "sign"
+    return "informative"
+
+
 def corr_per_sample(traces, values):
     """Pearson correlation of every sample against a per-trace scalar."""
     v = np.asarray(values, dtype=np.float64)
@@ -231,13 +256,13 @@ def do_snr(path, plot_path, coords, top_n, hw_bins, min_class):
                 continue
             hw = d[hw_key]
             lv = d[lv_key]
-            constant = np.unique(lv).size <= 1
+            kind = classify_limb(lv)
             s = snr_by_class(traces, bin_hw(hw, hw_bins), min_class=min_class)
-            if s is None:
-                print(f"    limb {k:2d}: label constant, no SNR "
-                      f"(value 0x{int(lv[0]):08x})")
+            if kind == "constant" or s is None:
+                print(f"    limb {k:2d}: constant across traces "
+                      f"(0x{int(lv[0]):08x}), no leakage to measure")
                 rows.append({"coord": c, "limb": k, "snr": np.nan, "corr": np.nan,
-                             "peak": -1, "constant": True})
+                             "peak": -1, "kind": "constant"})
                 continue
             r_hw = corr_per_sample(traces, hw)
             r_neg = corr_per_sample(traces, d[f"c{c}_limb{k}_neg_hw"])
@@ -262,31 +287,49 @@ def do_snr(path, plot_path, coords, top_n, hw_bins, min_class):
                 "corr_neg": float(np.abs(r_neg).max()),
                 "peak": poi,
                 "n_over_floor": n_over,
-                "constant": bool(constant),
+                "kind": kind,
+                "distinct": int(np.unique(lv).size),
             })
             agree = abs(snr_argmax - poi) <= max(4, int(spc)) if spc else abs(snr_argmax - poi) <= 4
+            tag = "  <- SIGN label, not a HW label" if kind == "sign" else ""
             print(f"    limb {k:2d}: |corr(HW)|={np.abs(r_hw)[poi]:.3f} at sample {poi}"
                   + (f" (cycle ~{poi / spc:5.0f})" if spc else "")
-                  + f"  SNR@poi={snr_at_poi:7.4f}  SNR_max={snr_max:7.4f}"
-                  f"  |corr(HW~)|={np.abs(r_neg).max():.3f}"
-                  f"  over_floor={n_over}"
-                  + ("" if agree else "   [SNR peak elsewhere: sample %d]" % snr_argmax))
+                  + f"  SNR@poi={snr_at_poi:7.4f}"
+                  f"  distinct={np.unique(lv).size:3d}"
+                  f"  over_floor={n_over}{tag}"
+                  + ("" if agree else "   [SNR peak elsewhere: %d]" % snr_argmax))
 
-    real = [r for r in rows if not r["constant"] and np.isfinite(r["snr"])]
+    real = [r for r in rows if r.get("kind") == "informative" and np.isfinite(r["snr"])]
+    signs = [r for r in rows if r.get("kind") == "sign"]
+
+    if signs:
+        sc = np.array([r["corr"] for r in signs])
+        print(f"\n  {len(signs)} sign-extension limbs (excluded from the ranking): "
+              f"|corr| median={np.median(sc):.3f}. These all carry the same one-bit "
+              f"label and peak at the same samples, so they measure the sign leak, "
+              f"not per-limb Hamming weight.")
+
     if real:
         real_sorted = sorted(real, key=lambda r: -r["corr"])
-        print(f"\n  strongest {min(top_n, len(real_sorted))} limbs by |corr(HW)|:")
+        print(f"\n  strongest {min(top_n, len(real_sorted))} informative limbs by |corr(HW)|:")
         for r in real_sorted[:top_n]:
             print(f"    coord[{r['coord']}] limb {r['limb']:2d}  |corr|={r['corr']:.3f}  "
                   f"SNR@poi={r['snr']:.4f}  sample {r['peak']}  "
-                  f"samples over floor={r['n_over_floor']}")
+                  f"distinct={r['distinct']}  over floor={r['n_over_floor']}")
         snrs = np.array([r["snr"] for r in real])
         corrs = np.array([r["corr"] for r in real])
         n_sig = int((corrs > corr_floor).sum())
-        print(f"\n  across {len(real)} varying limbs: |corr| median={np.median(corrs):.3f} "
-              f"max={corrs.max():.3f}; {n_sig}/{len(real)} limbs peak above the "
+        print(f"\n  across {len(real)} informative limbs: |corr| median={np.median(corrs):.3f} "
+              f"max={corrs.max():.3f}; {n_sig}/{len(real)} peak above the "
               f"{corr_floor:.3f} noise floor")
         print(f"  SNR@poi: median={np.median(snrs):.4f} max={snrs.max():.4f}")
+        base = np.median(corrs)
+        # traces needed for CPA to separate the right hypothesis, the usual
+        # Mangard estimate n ~ 28 / ln^2((1+r)/(1-r)) at 99.99% confidence
+        rr = min(base, 0.999)
+        n_needed = 28.0 / (np.log((1 + rr) / (1 - rr)) ** 2)
+        print(f"  at the median informative-limb correlation r={base:.3f}, CPA needs "
+              f"on the order of {n_needed:.0f} traces per limb")
         if snrs.max() >= 0.1:
             print("  -> comfortably exploitable: CPA on the strongest limbs should "
                   "converge in a few hundred traces")
