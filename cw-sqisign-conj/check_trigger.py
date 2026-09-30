@@ -44,8 +44,10 @@ def main():
     p.add_argument("--timebase", type=int, default=2,
                    help="ps3000a timebase (2 -> ~4 ns with 2 channels enabled)")
     p.add_argument("--pre-samples", type=int, default=2000)
-    p.add_argument("--cha-range", type=int, default=5, help="Ch A range code (5 = +/-500 mV)")
-    p.add_argument("--chb-range", type=int, default=7, help="Ch B range code (7 = +/-2 V)")
+    p.add_argument("--cha-range", type=int, default=3,
+                   help="Ch A range code (3 = +/-100 mV; the CW308 shunt swings ~30 mV, so 500 mV wastes most of the ADC)")
+    p.add_argument("--chb-range", type=int, default=8,
+                   help="Ch B range code (8 = +/-5 V; the 3.3 V trigger GPIO overflows a 2 V range)")
     p.add_argument("--skip-flash", action="store_true")
     p.add_argument("--timeout", type=float, default=900.0,
                    help="seconds to wait for the trigger (Alg 3.18 line 1 runs first)")
@@ -71,12 +73,16 @@ def main():
 
     try:
         scope.default_setup()
+        rig.set_target_clock(scope)
         if not args.skip_flash:
             print(f"programming {rig.HEX.name} ...", flush=True)
             cw.program_target(scope, STM32FProgrammer, str(rig.HEX))
+        else:
+            rig.reset_target(scope)
         time.sleep(0.2)
         target.flush()
         print("banner:", target.read(timeout=1000), flush=True)
+        rig.sync(target)
 
         info = rig.board_info(target)
         print(f"board: trig_mode={info['trig_mode']} out_of_place={info['out_of_place']} "

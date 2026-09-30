@@ -28,10 +28,24 @@ HOST = APP / "conj_vector_host"
 HEX = APP / "simpleserial-sqisign-conj-CW308_STM32F4.hex"
 CHUNK = 48
 
-# The board clock, set by scope.default_setup(). Used to convert the DWT cycle
-# counts the firmware reports into a sample count, which is how the trigger is
-# cross-checked against the code.
-TARGET_CLOCK_HZ = 7_372_800.0
+# The board clock actually produced by scope.default_setup() on the CW-Lite:
+# clkgen_div=26 off the 192 MHz clkgen gives 192e6/26 = 7.3846 MHz, not the
+# 7.3728 MHz the nominal figure suggests. Measured and confirmed against the
+# spectrum of a captured segment. set_target_clock() overrides it from the live
+# scope object when one is available.
+TARGET_CLOCK_HZ = 192_000_000.0 / 26.0
+
+
+def set_target_clock(scope):
+    """Take the real clock from the scope rather than trusting the default."""
+    global TARGET_CLOCK_HZ
+    try:
+        f = float(scope.clock.clkgen_freq)
+        if f > 0:
+            TARGET_CLOCK_HZ = f
+    except Exception:
+        pass
+    return TARGET_CLOCK_HZ
 
 
 # ============================================================
@@ -66,6 +80,44 @@ def gen_vector(path, seed=None):
 def ss_cmd(target, cmd, data=b"", pay_len=1, timeout_ms=250000):
     target.simpleserial_write(cmd, bytearray(data))
     return target.simpleserial_read("r", pay_len, timeout=timeout_ms)
+
+
+def reset_target(scope, settle_s=0.4):
+    """Pulse nRST on the CW308.
+
+    Needed whenever the board is not reprogrammed (--skip-flash): the previous
+    session leaves the firmware mid-protocol and scope.default_setup() re-inits
+    the clock and UART under it, so the first commands read garbage.
+    """
+    try:
+        scope.io.nrst = "low"
+        time.sleep(0.05)
+        scope.io.nrst = "high_z"
+    except Exception as e:
+        print(f"nRST pulse failed ({e}); relying on flush alone", flush=True)
+    time.sleep(settle_s)
+
+
+def sync(target, attempts=6):
+    """Get the serial link into a known state.
+
+    With --skip-flash the board is not reset, so whatever the previous session
+    left in the UART is still queued and the first command reads garbage. Flush,
+    then send the buffer-clear command until it acks cleanly.
+    """
+    for i in range(attempts):
+        try:
+            target.flush()
+        except Exception:
+            pass
+        try:
+            if ss_cmd(target, "x", b"", 1, timeout_ms=3000) == bytearray([1]):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.1)
+    raise RuntimeError(f"could not synchronise with the board after {attempts} attempts; "
+                       f"power-cycle the CW308 or drop --skip-flash")
 
 
 def board_info(target):

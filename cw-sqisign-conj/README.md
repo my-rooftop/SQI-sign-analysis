@@ -71,8 +71,18 @@ coord[2]/[3]가 작은 이유: norm form이 `a² + b² + p(c² + d²)`이고 log
 c, d는 a, b보다 약 √p배 작다 (234 − 71 = 163 ≈ 324/2).
 
 **coord[0] (`a`, ~234 bit)와 denom은 negate가 아니라 `ibz_copy`(= `memmove`)** 다.
-in-place `memmove`에서 실제로 데이터가 움직이는지는 libc 구현에 달려 있어 trace로 확인해야
-한다 — `CONJ_TRIG_MODE=4`가 이 두 구간에 별도 트리거를 넣는다.
+보드 실측 결과 in-place `ibz_copy`가 **144 cycle (limb당 11 cycle)** 을 소비한다 — no-op이
+아니므로 negate되지 않는 `a` 좌표도 버스에 실리고, 누설 후보다. `CONJ_TRIG_MODE=4`가 이
+두 구간에 별도 트리거를 넣는다.
+
+### 벡터 파일의 `bounds` 줄
+
+`ibz_t`는 선언된 비트 경계값을 갖고 하위 연산이 이를 상속하는데, `ibz_set_from_str()`
+(`mp.c:311`)은 파싱한 크기에서 경계값을 다시 잡는다. 이 차이가 α_sk,chl까지 전파되어
+line 2에서 `ibz_neg`가 도는 limb 수를 바꾼다 (hex 왕복 시 401/13 → 319/10). 그래서 벡터
+파일이 14개 입력값의 경계값을 `bounds` 줄로 함께 싣고, 호스트와 펌웨어가 파싱 후
+`ibz_set_bound()`로 복원한다. 이게 없으면 보드는 실제 서명 장치보다 좁은 구간을 실행한다.
+펌웨어는 `p` 명령의 `bounds_applied`로 적용 여부를 보고한다.
 
 ## 구성
 
@@ -187,15 +197,57 @@ fixed/random 교차(interleave)는 온도·전원 드리프트가 누설로 오�
 수렴할 수준, 0.01–0.1이면 수천 trace, 그 이하면 복구 시도 전에 측정 자체(프로브·레인지·
 평균)를 개선해야 한다.
 
+## 보드 실측 (STM32F415 @ 7.3846 MHz)
+
+| 구간 | cycles | 비중 |
+|---|---:|---:|
+| Algorithm 3.18 전체 | 73–92 M (10–12.5 s) | 100% |
+| line 1 `EquivalentCoprimeIdeal` | 43–50 M | ~53% |
+| line 5 `RandomBoundedElement` | 41–42 M | ~46% |
+| line 5 `IdealMultiplication` | 0.19 M | 0.2% |
+| `Intersect` (line 1 이전) | 0.25 M | 0.3% |
+| **line 2 `Conjugate`** | **1,121 (152 µs)** | **0.0013%** |
+
+line 2 내부: `coord[0]` copy 144 cycle, `coord[1]/[2]/[3]` negate 각 247 cycle
+→ **limb당 19.0 cycle** × 13 limb.
+
+트리거(mode 2)는 pre-sample 위치에 정확히 붙고 폭이 **trace 간 sd = 0.0** 이다
+(34,739 샘플 = 1024 cycle @ 4 ns). DWT가 보고한 1121 cycle 대비 비율 0.91인데, 차이는
+트리거 밖에 있지만 계측 구간 안에 있는 bitlen/limb 프로파일링 코드다. 정렬 작업이 필요 없다.
+
 ## 검증 상태
 
 - 호스트 Algorithm 3.18: upstream 불변식 전부 통과 (`selftest: OK`)
 - ARM 펌웨어: 경고 없이 빌드 (ROM 64 KB, 정적 RAM 20.8 KB)
+- **보드**: `check_trigger.py` 통과 — conjugate 산술 검증, 펄스 수, DWT 대비 폭,
+  limb당 cycle, bitlen 401/13 limb 재현 (`bounds_applied=1`)
+- **신호**: Ch A ±100 mV에서 overflow 0, 스펙트럼에 7.384 MHz 타겟 클럭과
+  14.8 / 29.5 / 36.9 / 44.3 MHz 고조파. limb 주기(644 샘플)로 접은 평균에 재현되는
+  루프 시그니처가 나온다
 - TVLA/SNR/correlation 수치 경로: 알려진 HW 누설을 심은 합성 데이터로 검증.
   correlation locator가 주입 8개 limb 중 7개의 시간 위치를 정확히 복원했고,
   sign-extension limb 25개는 모두 올바르게 배제됨
-- **실측 trace는 아직 없음** — 2~5단계는 하드웨어(PicoScope 3403D + CW-Lite + CW308/STM32F415)
-  연결 후 실행해야 한다
+
+## 스코프 설정에서 주의할 점
+
+- **Ch A 레인지**: CW308 션트 출력이 ±30 mV 수준이라 기본 ±500 mV로 잡으면 ADC를 5%만
+  쓰고 파형이 노이즈로만 보인다. `--cha-range 3` (±100 mV)이 기본값이다.
+- **Ch B 레인지**: 트리거 GPIO가 3.3 V라 ±2 V 레인지는 overflow한다. `--chb-range 8`
+  (±5 V)이 기본값이다. 엣지만 쓰므로 치명적이진 않지만 overflow 플래그가 계속 뜬다.
+- **타겟 클럭**: CW-Lite `default_setup()`은 192 MHz / 26 = **7.3846 MHz**를 낸다.
+  흔히 인용되는 7.3728 MHz가 아니다 (캡처 스펙트럼 피크와 일치). 스크립트는
+  `rig.set_target_clock(scope)`로 스코프에서 실측값을 읽는다.
+- **auto-trigger 없음**: line 1이 먼저 수 초간 돌기 때문에 `auto_trigger_ms=0`으로
+  하드웨어 트리거를 무한 대기한다. 기존 리그의 5초 auto-trigger를 그대로 쓰면 line 1
+  구간이 잡힌다.
+- **`--skip-flash` 사용 시 nRST 필요**: 재프로그래밍하지 않으면 이전 세션의 펌웨어가
+  프로토콜 중간 상태로 남아 있고 `scope.default_setup()`이 그 밑에서 UART를 다시
+  초기화하므로 첫 명령이 깨진다. `rig.reset_target(scope)`가 nRST를 펄스한다.
+
+## 처리량
+
+trace 1개 = Alg 3.18 1회 = **약 12–14.4초** (벡터 생성·전송·결과 읽기 포함).
+TVLA 120 trace ≈ 29분, SNR 200 trace ≈ 48분.
 
 ## 하드웨어 배선
 

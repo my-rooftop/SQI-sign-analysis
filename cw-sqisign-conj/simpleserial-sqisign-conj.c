@@ -58,6 +58,7 @@ static quat_alg_elem_t out_sk_chall_quat;     /* after line 2 */
 static quat_alg_elem_t out_sk_chall_quat_pre; /* before line 2: the SCA label */
 static ibz_t out_norm;
 static uint8_t last_valid;
+static uint8_t last_bounds_applied;
 
 /* Keep the core reachable even if the linker gets clever about a static call. */
 static void (*volatile keep_conj_core)(quat_ideal_t *,
@@ -113,6 +114,99 @@ static int
 parse_ideal(quat_ideal_t *ideal, const char **cursor)
 {
     return parse_ibz(&ideal->x, cursor) && parse_ibz(&ideal->y, cursor) && parse_ibz(&ideal->norm, cursor);
+}
+
+static int
+line_starts_with(const char *s, const char *kw)
+{
+    while (*kw) {
+        if (*s++ != *kw++) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int
+parse_int(const char **cursor, int *out)
+{
+    const char *s = *cursor;
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    int neg = 0;
+    if (*s == '-') {
+        neg = 1;
+        s++;
+    }
+    if (*s < '0' || *s > '9') {
+        return 0;
+    }
+    int v = 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (*s - '0');
+        s++;
+    }
+    *cursor = s;
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* Walk the vector-file header, collecting the declared bit bounds and leaving the
+ * cursor on the first hex token.
+ *
+ * The bounds matter: ibz_t carries a declared bit bound that every downstream
+ * ibz_t inherits, and ibz_set_from_str() re-derives it from the parsed magnitude
+ * (mp.c:311), which is tighter than what the host had in memory. That difference
+ * propagates to alpha_sk,chl and changes how many limbs ibz_neg walks at line 2,
+ * so without restoring the bounds the board would execute a narrower Conjugate
+ * than a real signer.
+ *
+ * Returns 1 if a bounds line was found, 0 otherwise; the cursor is advanced past
+ * the header either way. */
+static int
+parse_header(const char **cursor, int *bounds, int nbounds)
+{
+    const char *s = *cursor;
+    int have = 0;
+    for (;;) {
+        while (*s == '\n' || *s == '\r') {
+            s++;
+        }
+        if (*s == '\0') {
+            break;
+        }
+        if (*s == '#' || line_starts_with(s, "seed")) {
+            while (*s != '\0' && *s != '\n') {
+                s++;
+            }
+            continue;
+        }
+        if (line_starts_with(s, "bounds")) {
+            const char *q = s + 6;
+            have = 1;
+            for (int i = 0; i < nbounds; i++) {
+                if (!parse_int(&q, &bounds[i])) {
+                    have = 0;
+                    break;
+                }
+            }
+            while (*s != '\0' && *s != '\n') {
+                s++;
+            }
+            continue;
+        }
+        if (line_starts_with(s, "vector")) {
+            while (*s != '\0' && *s != '\n') {
+                s++;
+            }
+            break;
+        }
+        /* not a keyword: the hex payload starts here */
+        break;
+    }
+    *cursor = s;
+    return have;
 }
 
 static int
@@ -311,12 +405,33 @@ conj_compute(SS_ARGS)
     SS_UNUSED_HDR;
     uint8_t ok = 0;
     const char *cursor = inbuf;
+    int bounds[14];
+    int have_bounds;
 
     conj_profile_reset();
     last_valid = 0;
 
+    have_bounds = parse_header(&cursor, bounds, 14);
+
     if (parse_ideal(&in_sk_ideal, &cursor) && parse_ideal(&in_ideal_chall, &cursor) &&
         parse_elem(&in_chall_split, &cursor) && parse_ideal(&in_ideal_commit, &cursor)) {
+
+        last_bounds_applied = (uint8_t)have_bounds;
+        if (have_bounds) {
+            ibz_t *f[14] = {
+                &in_sk_ideal.x,          &in_sk_ideal.y,          &in_sk_ideal.norm,
+                &in_ideal_chall.x,       &in_ideal_chall.y,       &in_ideal_chall.norm,
+                &in_chall_split.denom,   &in_chall_split.coord.v[0],
+                &in_chall_split.coord.v[1], &in_chall_split.coord.v[2],
+                &in_chall_split.coord.v[3],
+                &in_ideal_commit.x,      &in_ideal_commit.y,      &in_ideal_commit.norm,
+            };
+            for (int i = 0; i < 14; i++) {
+                if (bounds[i] > f[i]->bitlen && bounds[i] <= IBZ_NLIMBS * NUM_BITS_LIMB) {
+                    ibz_set_bound(f[i], bounds[i]);
+                }
+            }
+        }
 
         prng_domain_ctx_t prng_res;
         if (prng_domain_seed(&prng_res, DS_RESPONSE_DOMAIN) == 0) {
@@ -425,6 +540,7 @@ conj_profile_read(SS_ARGS)
     }
     append_kv("equiv_ok", conj_profile.equiv_ok);
     append_kv("sample_ok", conj_profile.sample_ok);
+    append_kv("bounds_applied", (uint32_t)last_bounds_applied);
     uint8_t ok = 1;
     simpleserial_put('r', 1, &ok);
     return 0;

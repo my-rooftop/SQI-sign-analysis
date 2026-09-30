@@ -186,6 +186,26 @@ vector_generate(conj_vector_t *v, prng_domain_ctx_t *prng_key, prng_domain_ctx_t
     return ok;
 }
 
+/* The 14 values a vector carries, in wire order. */
+static void
+vector_fields(const conj_vector_t *v, const ibz_t *out[14])
+{
+    int k = 0;
+    out[k++] = &v->sk_ideal.x;
+    out[k++] = &v->sk_ideal.y;
+    out[k++] = &v->sk_ideal.norm;
+    out[k++] = &v->ideal_chall.x;
+    out[k++] = &v->ideal_chall.y;
+    out[k++] = &v->ideal_chall.norm;
+    out[k++] = &v->chall_split.denom;
+    for (int i = 0; i < 4; i++) {
+        out[k++] = &v->chall_split.coord.v[i];
+    }
+    out[k++] = &v->ideal_commit.x;
+    out[k++] = &v->ideal_commit.y;
+    out[k++] = &v->ideal_commit.norm;
+}
+
 static void
 vector_emit(const conj_vector_t *v, const char *seed_hex)
 {
@@ -197,6 +217,24 @@ vector_emit(const conj_vector_t *v, const char *seed_hex)
     printf("# field order: sk.x sk.y sk.norm chall.x chall.y chall.norm "
            "split.denom split.c0..c3 com.x com.y com.norm\n");
     printf("seed %s\n", seed_hex ? seed_hex : "default");
+
+    /* ibz_t carries a declared bit bound, and every downstream ibz_t inherits it.
+     * ibz_set_from_str() re-derives the bound from the parsed magnitude
+     * (mp.c:311), which is tighter than the bound these values had in memory --
+     * and that difference propagates all the way to alpha_sk,chl, changing how
+     * many limbs ibz_neg walks at line 2. So the bounds travel with the values
+     * and the reader restores them with ibz_set_bound(). Without this the board
+     * measures a narrower window than a real signer would execute. */
+    {
+        const ibz_t *f[14];
+        vector_fields(v, f);
+        printf("bounds");
+        for (int i = 0; i < 14; i++) {
+            printf(" %d", f[i]->bitlen);
+        }
+        printf("\n");
+    }
+
     printf("vector\n");
     print_ibz_bare(&v->sk_ideal.x);
     print_ibz_bare(&v->sk_ideal.y);
@@ -222,13 +260,31 @@ vector_load(conj_vector_t *v, const char *path, char *seed_out, size_t seed_len)
         return 0;
     }
 
-    /* skip comments, pick up "seed <hex>", stop after the "vector" keyword */
+    /* skip comments, pick up "seed <hex>" and "bounds ...", stop after "vector" */
     char line[4096];
     seed_out[0] = '\0';
     int saw_vector = 0;
+    int bounds[14];
+    int have_bounds = 0;
     long pos = 0;
     while (fgets(line, sizeof(line), f)) {
         if (line[0] == '#') {
+            pos = ftell(f);
+            continue;
+        }
+        if (strncmp(line, "bounds ", 7) == 0) {
+            const char *q = line + 7;
+            have_bounds = 1;
+            for (int i = 0; i < 14; i++) {
+                char *end = NULL;
+                long b = strtol(q, &end, 10);
+                if (end == q) {
+                    have_bounds = 0;
+                    break;
+                }
+                bounds[i] = (int)b;
+                q = end;
+            }
             pos = ftell(f);
             continue;
         }
@@ -272,6 +328,22 @@ vector_load(conj_vector_t *v, const char *path, char *seed_out, size_t seed_len)
     fclose(f);
     if (!ok) {
         fprintf(stderr, "%s: malformed vector\n", path);
+        return 0;
+    }
+
+    if (have_bounds) {
+        const ibz_t *cf[14];
+        vector_fields(v, cf);
+        for (int i = 0; i < 14; i++) {
+            ibz_t *x = (ibz_t *)cf[i];
+            if (bounds[i] > x->bitlen) {
+                ibz_set_bound(x, bounds[i]);
+            }
+        }
+    } else {
+        fprintf(stderr, "%s: no 'bounds' line; alpha_sk,chl will get a tighter "
+                        "bit bound than a real signer produces\n",
+                path);
     }
     return ok;
 }
