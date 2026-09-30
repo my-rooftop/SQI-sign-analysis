@@ -306,7 +306,8 @@ class Pico:
         ps.ps3000aMaximumValue(self.chandle, ctypes.byref(self.maxADC))
 
         print(f"PicoScope: {self.interval_ns:.3f} ns/sample "
-              f"({self.samples_per_cycle:.1f} samples per 7.3728 MHz target cycle), "
+              f"({self.samples_per_cycle:.1f} samples per "
+              f"{TARGET_CLOCK_HZ / 1e6:.4f} MHz target cycle), "
               f"{samples} samples = {samples * self.interval_ns / 1e6:.3f} ms window, "
               f"pre={pre_samples}", flush=True)
 

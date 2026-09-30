@@ -228,6 +228,31 @@ line 2 내부: `coord[0]` copy 144 cycle, `coord[1]/[2]/[3]` negate 각 247 cycl
   correlation locator가 주입 8개 limb 중 7개의 시간 위치를 정확히 복원했고,
   sign-extension limb 25개는 모두 올바르게 배제됨
 
+## 누설 측정 결과 (실측)
+
+### TVLA — fixed 60 / random 60, CONJ_TRIG_MODE=2
+
+```
+fixed vs random : max|t| = 9.92 at sample 13757 (cycle ~406)
+                  2647 of 34735 samples exceed 4.5 (7.62%)
+fixed vs fixed  : max|t| = 4.23, 0 samples over threshold  OK
+verdict: LEAKAGE DETECTED
+```
+
+대조군(fixed vs fixed)이 임계값을 넘지 않으므로 리그 드리프트가 아니라 데이터 의존
+누설이다. 120 trace만으로 검출됐다.
+
+t-trace는 균일하지 않고 **4개 밴드로 뭉친다**. 밴드 중심은 대략 175 / 428 / 635 / 893
+cycle이고 간격이 ~250 cycle로, 측정된 좌표당 비용 247 cycle과 일치한다. 네 밴드가 각각
+`coord[0]` copy와 `coord[1]`/`[2]`/`[3]` negate에 대응하는 것으로 보이며, 밴드 사이
+조용한 구간은 프로파일링 호출과 루프 셋업이다.
+
+`coord[0]` 밴드에도 |t| ≈ 9.9가 뜨는데, 이는 negate하지 않고 `memmove`로 복사만 하는
+`a` 좌표도 누설한다는 디스어셈블리 분석과 일치한다.
+
+**주의**: 밴드 ↔ 좌표 대응은 아직 간격으로부터의 추론이다. 확정하려면
+`CONJ_TRIG_MODE=3`(좌표별 펄스) 또는 `4`(copy 포함 5구간)로 다시 찍어 분절해야 한다.
+
 ## 스코프 설정에서 주의할 점
 
 - **Ch A 레인지**: CW308 션트 출력이 ±30 mV 수준이라 기본 ±500 mV로 잡으면 ADC를 5%만
