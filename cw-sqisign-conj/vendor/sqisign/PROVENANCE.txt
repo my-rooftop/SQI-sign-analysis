@@ -1,0 +1,7 @@
+upstream: https://github.com/SQISign/the-sqisign.git
+commit:   f417ebd4c2c336ad6a9feb6f9255f95fc03acc41
+date:     Mon Sep 21 17:32:42 2026 +0200
+subject:  Fix const-issue in mp tests
+generated: scripts/gen_pqm4_sources.sh ref  (src/pqm4/sqisign_p324_3/ref)
+added:    fips202.c, fips202.h from src/common/generic
+
