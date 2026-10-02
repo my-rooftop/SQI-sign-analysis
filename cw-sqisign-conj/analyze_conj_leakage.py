@@ -226,15 +226,23 @@ def do_snr(path, plot_path, coords, top_n, hw_bins, min_class):
     recs = json.loads(str(d["records_json"])) if "records_json" in d else []
 
     ntr = traces.shape[0]
-    # |corr| noise floor: for uncorrelated data the sampling sd of r is ~1/sqrt(N),
-    # so 4/sqrt(N) is a conservative per-sample threshold.
-    corr_floor = 4.0 / np.sqrt(max(ntr, 2))
+    nsamp = traces.shape[1]
+    # Threshold for a |corr| MAXIMISED OVER SAMPLES, which is what is reported
+    # below. Under the null each sample's r has sd ~1/sqrt(N), and the maximum of
+    # nsamp of them sits near sqrt(2 ln nsamp) sd -- for 35k samples that is 4.6
+    # sd, far above the 4/sqrt(N) figure appropriate to a single pre-chosen
+    # sample. Comparing a max against the per-sample threshold declares leakage
+    # on pure noise.
+    corr_floor_pointwise = 4.0 / np.sqrt(max(ntr, 2))
+    corr_floor = np.sqrt(2.0 * np.log(max(nsamp, 2))) / np.sqrt(max(ntr, 2))
 
     print(f"\n{'=' * 72}\nSNR / correlation  {path}")
     print(f"  traces={ntr} samples={traces.shape[1]} nlimbs={nlimbs}"
           + (f"  ({spc:.1f} samples per target cycle)" if spc else ""))
     print(f"  HW class binning: {hw_bins if hw_bins > 0 else 'none (raw HW)'}, "
-          f"min traces per class: {min_class}, |corr| noise floor: {corr_floor:.3f}")
+          f"min traces per class: {min_class}")
+    print(f"  |corr| thresholds: {corr_floor_pointwise:.3f} per-sample, "
+          f"{corr_floor:.3f} for a max over all {nsamp} samples (the figure used here)")
     if ntr < 20:
         print("  WARNING: fewer than 20 traces; SNR estimates will be very noisy")
 

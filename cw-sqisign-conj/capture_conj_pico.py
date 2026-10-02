@@ -87,6 +87,10 @@ def main():
     p.add_argument("--timeout", type=float, default=900.0)
     p.add_argument("--crop", action="store_true",
                    help="store only the triggered window instead of the whole record")
+    p.add_argument("--seed-prefix", default="rnd",
+                   help="prefix for the per-trace vector seed; change it to capture a "
+                        "set disjoint from an earlier run instead of regenerating the "
+                        "same vectors")
     p.add_argument("--out", default=None)
     p.add_argument("--plot", default=None)
     args = p.parse_args()
@@ -156,9 +160,9 @@ def main():
                 rig.load_vector(target, fixed_vec)
                 rig.seed_board(target, FIXED_SEED16)
             else:
-                vec = rig.gen_vector(VECTOR, seed=f"rnd{i}")
+                vec = rig.gen_vector(VECTOR, seed=f"{args.seed_prefix}{i}")
                 rig.load_vector(target, vec)
-                srng = random.Random(0x5EED + i)
+                srng = random.Random(hash(args.seed_prefix) % 10**6 + i)
                 rig.seed_board(target, bytes(srng.getrandbits(8) for _ in range(16)))
 
             pico.arm()
