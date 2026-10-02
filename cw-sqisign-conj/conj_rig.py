@@ -62,15 +62,30 @@ def ensure_host_tool():
         run([str(APP / "build_host_tool.sh")])
 
 
-def gen_vector(path, seed=None):
-    """Generate one Alg 3.18 input vector with conj_vector_host."""
+def gen_vector(path, seed=None, retries=8):
+    """Generate one Alg 3.18 input vector with conj_vector_host.
+
+    Retries with a perturbed seed if the generator fails. Vector generation runs
+    upstream quaternion code that can hit rare bad draws, and a capture that
+    takes hours should not be lost to one of them.
+    """
     ensure_host_tool()
-    cmd = [str(HOST), "gen"]
-    if seed is not None:
-        cmd.append(str(seed))
-    with open(path, "wb") as f:
-        subprocess.run(cmd, check=True, stdout=f)
-    return pathlib.Path(path).read_bytes()
+    last = None
+    for attempt in range(retries):
+        s = seed if attempt == 0 else f"{seed}r{attempt}"
+        cmd = [str(HOST), "gen"] + ([str(s)] if s is not None else [])
+        try:
+            with open(path, "wb") as f:
+                subprocess.run(cmd, check=True, stdout=f)
+            data = pathlib.Path(path).read_bytes()
+            if b"vector" in data:
+                if attempt:
+                    print(f"  vector seed {seed!r} failed, used {s!r} instead", flush=True)
+                return data
+            last = "generator produced no vector section"
+        except subprocess.CalledProcessError as e:
+            last = f"exit {e.returncode}"
+    raise RuntimeError(f"vector generation failed after {retries} attempts: {last}")
 
 
 # ============================================================

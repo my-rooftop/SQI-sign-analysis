@@ -144,9 +144,16 @@ vector_generate(conj_vector_t *v, prng_domain_ctx_t *prng_key, prng_domain_ctx_t
     ibz_init(&tmp);
     int ok = 1;
 
-    /* secret key ideal */
-    ibz_generate_random_prime(&p, 0, ibz_bitsize(&QUATALG_PINFTY.p) / 2);
-    ok = ok && quat_random_ideal_O0_given_prime_norm(&v->sk_ideal, &p, prng_key);
+    /* Secret key ideal, exactly as keygen.c:32-37 builds it: a random O0-ideal of
+     * norm SEC_DEGREE, replaced by a small equivalent of prime norm.
+     *
+     * An earlier version drew a random prime of bitsize(p)/2 for the norm, the
+     * way upstream's quaternion test does. That reached a divide-by-zero inside
+     * quat_ideal_small_equivalent_coprime_enumeration -> quat_ideal_create_O0_odd
+     * -> ibz_mod -> mp_divmod_schoolbook (mp.c:581) on some draws, and it is not
+     * what a real signer does anyway. */
+    (void)p;
+    ok = ok && quat_random_ideal_O0_given_prime_norm(&v->sk_ideal, &SEC_DEGREE, prng_key);
     ok = ok && quat_ideal_small_equivalent_coprime(NULL, &v->sk_ideal, &v->sk_ideal, &ibz_const_zero, prng_key);
 
     /* commitment ideal */
