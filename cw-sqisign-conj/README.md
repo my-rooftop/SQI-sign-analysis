@@ -341,6 +341,76 @@ limb당 추출 가능 최대 = H(HW of 32-bit word) = 3.55 bit
 `√(2 ln S)/√N`이고, N=200·S=34734에서 0.283이 아니라 **0.323**이다. 분석기는 두 값을
 모두 출력하고 후자로 판정한다.
 
+## 두 번째 타겟: Sign Algorithm 3.23 line 12 (복구 성공)
+
+Alg 3.18 line 2가 복구 불가로 판명된 뒤, 알려진 값이 비밀과 만나는 지점을 찾아 옮긴
+타겟이다. Alg 3.18 line 5(`IdealMultiplication`)도 검토했으나 `I'_sk,chl`과 `I_com`이
+**둘 다 비밀**이라(서명에서 `E_com`을 복원해도 이데알은 못 얻는다) 같은 벽이었다.
+
+```c
+// sign.c :: compute_challenge_ideal_signature
+ibz_copy_digits(&vec.v[1], sig->chall_coeff, NWORDS_ORDER);  // 서명에 포함 = 공개
+ibz_mat_2x2_eval(&vec, &sk->mat_BAcan_to_BA0_two, &vec);     // 비밀 행렬 × 공개
+  └─ dim2.c:50  ibz_mul(&prod, &mat->m[0][1], &vec->v[1]);   // ★ 타겟
+       └─ mp.c:455  prod_ij = (ddigit_t)a.limbs[i] * b.limbs[j];
+                    res.limbs[0] = low32(a0 * b0)
+```
+
+| | Alg 3.18 line 2 | **Sign line 12** |
+|---|---|---|
+| 비밀 | 서명마다 새로 뽑힘 | **고정** (비밀키 일부) |
+| 알려진 입력 | 없음 | `chall_coeff` |
+| 누설 함수 | `HW(limb)` 뿐 | `HW(low32(a₀·b₀))` |
+| TVLA max\|t\| | 9.92 | **22.02** (대조군 4.03) |
+| trace 비용 | 13.5 s | **65 ms** |
+| 결과 | 610 bit 중 64 bit 천장 | **32 bit limb 복구** |
+
+### 측정
+
+- 보드 결과가 호스트와 일치(`c1/c2 match`), 타겟 곱셈 1560 cycle = 211 µs
+- 정답 모델로 16개 limb 조합을 훑으면 `(i=0, j=0)`만 sample 9904에서 `|corr| = 0.38`,
+  나머지 15개는 노이즈 하한. `HW(b0)`를 편상관으로 제거해도 0.3786으로 유지되므로
+  공개값 누설의 전이가 아니라 곱 자체의 누설이다
+- 참고로 `HW(b0)` 단독은 0.43으로 더 강하게 새지만 비밀을 담지 않는다
+
+### 공격: 2라운드 후보 목록 CPA
+
+단순 CPA는 실패한다. 세 단계를 거쳤다.
+
+1. **1바이트 가설(256개) — 실패.** 32비트 중 8비트만 예측해 ghost에 진다.
+   trace를 100→500으로 늘려도 순위가 3~5위에서 **개선되지 않는다**. 통계가 아니라 모델
+   한계다.
+2. **16비트 가설(65536개) — 1위는 못 잡는다.** 10,000 trace까지 가도 **rank 4 고정**.
+   `HW(b0)` 공통 성분을 투영 제거해도 그대로다.
+3. **후보 목록 + 전체 32비트 판별 — 성공.** 정답이 1위는 아니어도 **항상 상위 4위 안**에
+   있다는 점을 쓴다. 1라운드에서 상위 K개를 남기고, 각각을 상위 16비트로 완성해 전체
+   32비트 모델로 점수를 매기면 정답이 1위로 떠오른다.
+
+| trace 수 | 1라운드 정답 순위 | 2라운드 결과 |
+|---:|---:|---|
+| 250 | 2 / 65536 | 실패 |
+| **500** | 4 / 65536 | **복구 성공** |
+| 1000 / 2000 / 4000 | 4 / 65536 | 복구 성공 |
+
+K = 16과 K = 256 모두 성공하므로 후보는 16개로 충분하다.
+
+### 남은 범위
+
+복구한 것은 `Msk[0][1]`의 **limb 0 (하위 32비트)** 이다. 나머지 limb은
+`res[1] = low32(a₀b₁ + a₁b₀ + carry)`에서 `a₀`를 안 상태로 같은 절차를 반복하면 되지만
+아직 구현하지 않았다. `Msk[1][1]`은 트리거 모드 13으로 같은 방식이 적용된다.
+
+### 사용법
+
+```bash
+make clean PLATFORM=CW308_STM32F4
+make PLATFORM=CW308_STM32F4 CONJ_TRIG_MODE=12
+~/.cwvenv/bin/python3 capture_chall_pico.py --mode tvla   --traces 1000 --skip-flash
+~/.cwvenv/bin/python3 capture_chall_pico.py --mode random --traces 2000 --skip-flash \
+    --timebase 3 --samples 30000 --out /tmp/sqisign_chall_cpa.npz
+~/.cwvenv/bin/python3 cpa_chall.py --npz /tmp/sqisign_chall_cpa.npz --find-poi --curve 500,1000,2000
+```
+
 ## 스코프 설정에서 주의할 점
 
 - **Ch A 레인지**: CW308 션트 출력이 ±30 mV 수준이라 기본 ±500 mV로 잡으면 ADC를 5%만

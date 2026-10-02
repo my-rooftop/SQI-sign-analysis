@@ -78,58 +78,54 @@ def hw_rows(prod, nbytes):
     return out
 
 
-def recover_chunked(x, xn, b0, chunk_bits=16, total_bits=32, truth=None,
-                    batch=1 << 14, verbose=True):
-    """Recover the secret limb in chunks of `chunk_bits`, low chunk first.
+def score_hypotheses(hyps, b0, x, xn, nbits, batch=1 << 13):
+    """|corr| for each candidate value of the low `nbits` of the secret limb."""
+    mask = np.uint64((1 << nbits) - 1) if nbits < 64 else np.uint64(0xFFFFFFFFFFFFFFFF)
+    nby = (nbits + 7) // 8
+    out = np.empty(len(hyps))
+    for s0 in range(0, len(hyps), batch):
+        h = np.asarray(hyps[s0:s0 + batch], dtype=np.uint64)
+        prod = (h[:, None] * b0[None, :]) & mask
+        out[s0:s0 + len(h)] = corr_at_poi(x, xn, hw_rows(prod, nby))
+    return out
 
-    A one-byte model predicts only 8 of the 32 product bits, so the remaining 24
-    behave as noise and ghost hypotheses outrank the truth no matter how many
-    traces are added -- that is a model limit, not a statistical one. Widening
-    the chunk to 16 bits predicts half the product and separates cleanly, at the
-    cost of 65536 hypotheses per round instead of 256.
+
+def recover_limb(x, xn, b0, keep=16, truth=None, verbose=True):
+    """Two-round candidate-list CPA for one 32-bit secret limb.
+
+    Round 1 ranks the low 16 bits on a model that predicts only half the product.
+    That model cannot pick the winner -- the true value sits a few places down and
+    stays there however many traces are added, which is a model limit rather than
+    noise -- but it does keep the truth in the top handful. Round 2 completes each
+    surviving candidate with every high half and scores the full 32-bit product,
+    which does discriminate. Keeping a list instead of only the argmax is what
+    makes the attack work.
     """
-    known = 0
-    known_bits = 0
-    results = []
-    while known_bits < total_bits:
-        nbits = min(chunk_bits, total_bits - known_bits)
-        H = 1 << nbits
-        pred_bits = known_bits + nbits
-        pred_bytes = (pred_bits + 7) // 8
-        mask = np.uint64((1 << pred_bits) - 1)
+    s1 = score_hypotheses(np.arange(1 << 16, dtype=np.uint64), b0, x, xn, 16)
+    order1 = np.argsort(s1)[::-1]
+    cands = order1[:keep].astype(np.uint64)
 
-        scores = np.empty(H)
-        for s0 in range(0, H, batch):
-            hyp = np.arange(s0, min(s0 + batch, H), dtype=np.uint64)
-            full = np.uint64(known) | (hyp << np.uint64(known_bits))
-            prod = (full[:, None] * b0[None, :]) & mask
-            scores[s0:s0 + len(hyp)] = corr_at_poi(x, xn, hw_rows(prod, pred_bytes))
+    if verbose and truth is not None:
+        t_lo = truth & 0xFFFF
+        r1 = int(np.flatnonzero(order1 == t_lo)[0]) + 1
+        print(f"    round 1 (low 16 bits): true 0x{t_lo:04x} at rank {r1}/65536, "
+              f"keeping top {keep}" + ("" if r1 <= keep else "   -- TRUTH NOT IN LIST"))
 
-        order = np.argsort(scores)[::-1]
-        best = int(order[0])
-        margin = scores[order[0]] - scores[order[1]]
-        rank = None
+    best_val, best_score = None, -1.0
+    hi_all = np.arange(1 << 16, dtype=np.uint64)
+    for c in cands:
+        full = np.uint64(c) | (hi_all << np.uint64(16))
+        sc = score_hypotheses(full, b0, x, xn, 32)
+        j = int(np.argmax(sc))
+        if sc[j] > best_score:
+            best_score, best_val = float(sc[j]), int(full[j])
+
+    if verbose:
+        tag = ""
         if truth is not None:
-            tchunk = (truth >> known_bits) & (H - 1)
-            rank = int(np.flatnonzero(order == tchunk)[0]) + 1
-        if verbose:
-            tag = ""
-            if rank is not None:
-                tag = f"   true=0x{(truth >> known_bits) & (H - 1):0{nbits // 4}x} " \
-                      f"rank={rank}/{H}" + ("  HIT" if rank == 1 else "  MISS")
-            print(f"    bits {known_bits:2d}-{known_bits + nbits - 1:2d}: "
-                  f"best=0x{best:0{nbits // 4}x}  |corr|={scores[order[0]]:.4f}  "
-                  f"2nd={scores[order[1]]:.4f}  margin={margin:.4f}{tag}")
-        results.append({"bits": (known_bits, known_bits + nbits), "best": best,
-                        "rank": rank, "corr": float(scores[order[0]]),
-                        "margin": float(margin)})
-        known |= best << known_bits
-        known_bits += nbits
-        if truth is not None and rank != 1:
-            if verbose:
-                print("    -> wrong chunk, later chunks build on it; stopping")
-            break
-    return known, results
+            tag = "   RECOVERED" if best_val == truth else f"   (true 0x{truth:08x})"
+        print(f"    round 2 (full 32 bits): 0x{best_val:08x}  |corr|={best_score:.4f}{tag}")
+    return best_val, best_score
 
 
 def main():
@@ -141,9 +137,9 @@ def main():
                    help="centre the attack on this sample instead of the whole window")
     p.add_argument("--poi-width", type=int, default=400,
                    help="half-width of the POI window, in samples")
-    p.add_argument("--chunk-bits", type=int, default=16,
-                   help="hypothesis width per round; 8 is too narrow to beat the "
-                        "ghosts, 16 predicts half the product and separates")
+    p.add_argument("--keep", type=int, default=16,
+                   help="candidates carried from round 1 into round 2; the truth "
+                        "has consistently been inside the top few")
     p.add_argument("--find-poi", action="store_true",
                    help="locate the POI by correlating the true product, a profiling "
                         "step: an attacker does this on a device whose key they know")
@@ -198,13 +194,10 @@ def main():
         b0 = limbs[:n, 0]
         x = Xc[:, poi_local].copy()
         xn = np.sqrt((x * x).sum())
-        got, _ = recover_chunked(x, xn, b0.astype(np.uint64),
-                                 chunk_bits=args.chunk_bits, truth=a0_true)
-        ok = got == a0_true
+        got, _ = recover_limb(x, xn, b0.astype(np.uint64), keep=args.keep, truth=a0_true)
         nbytes_ok = sum(1 for k in range(4)
                         if ((got >> (8 * k)) & 0xFF) == ((a0_true >> (8 * k)) & 0xFF))
-        print(f"    recovered 0x{got:08x}  vs true 0x{a0_true:08x}  "
-              f"-> {nbytes_ok}/4 bytes correct{'  FULL LIMB RECOVERED' if ok else ''}")
+        print(f"    -> {nbytes_ok}/4 bytes correct")
 
     return 0
 
