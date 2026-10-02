@@ -8,6 +8,7 @@ SQ := $(APP_DIR)/vendor/sqisign/$(SQISIGN_VARIANT_DIR)
 
 SRC += simpleserial-sqisign-conj.c
 SRC += conj_core.c
+SRC += chall_core.c
 SRC += cw_randombytes.c
 
 VPATH += :$(SQ)
@@ -46,8 +47,8 @@ CRYPTO_TARGET = NONE
 OPT = s
 SS_VER ?= SS_VER_1_1
 
-# 2 = trigger wraps Algorithm 3.18 line 2, Conjugate(alpha_sk,chl). See conj_core.h
-# for the full mode table.
+# 2  = Algorithm 3.18 line 2, Conjugate(alpha_sk,chl)        -- see conj_core.h
+# 12 = Algorithm 3.23 line 12, ibz_mul(Msk[0][1], achl)      -- see chall_core.h
 CONJ_TRIG_MODE ?= 2
 CONJ_PROBE_REPS ?= 1
 CONJ_OUT_OF_PLACE ?= 0

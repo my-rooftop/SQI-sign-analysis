@@ -16,6 +16,11 @@
  *   l  ->  output length, big endian uint16
  *   g  ->  read output chunk at index (big endian uint16)
  *   p  ->  write the cycle/limb profile into the output buffer
+ *
+ * Algorithm 3.23 line 12 target (secret matrix times known challenge coefficient):
+ *   k  ->  load the fixed secret matrix Msk from the ASCII buffer
+ *   e  ->  run the matrix-vector product on CHALLENGE_BYTES of challenge coefficient
+ *   f  ->  read the result and the cycle profile of that run
  */
 #include "hal.h"
 #include "simpleserial.h"
@@ -25,6 +30,7 @@
 #include <string.h>
 
 #include "conj_core.h"
+#include "chall_core.h"
 
 #include <internal.h>
 #include <mp_internal.h>
@@ -58,6 +64,13 @@ static quat_alg_elem_t out_sk_chall_quat;     /* after line 2 */
 static quat_alg_elem_t out_sk_chall_quat_pre; /* before line 2: the SCA label */
 static ibz_t out_norm;
 static uint8_t last_valid;
+
+/* Algorithm 3.23 line 12 target: a fixed secret matrix, a known challenge
+ * coefficient supplied per call. */
+static ibz_mat_2x2_t chall_msk;
+static ibz_vec_2_t chall_vec;
+static ibz_vec_2_t chall_out;
+static uint8_t chall_msk_valid;
 static uint8_t last_bounds_applied;
 
 /* Keep the core reachable even if the linker gets clever about a static call. */
@@ -506,6 +519,87 @@ conj_read(SS_ARGS)
     return 0;
 }
 
+/* 'k': load the secret matrix Msk from the ASCII buffer (4 hex values, row
+ * major) and give every entry the CHALLENGE_BITS+1 bound keygen leaves them
+ * with. Sent once; it stays fixed for the whole campaign, which is the point --
+ * unlike alpha_sk,chl it is the same in every signature, so traces average. */
+uint8_t
+chall_set_secret(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    const char *cursor = inbuf;
+    uint8_t ok = 1;
+    for (int i = 0; i < 2 && ok; i++) {
+        for (int j = 0; j < 2 && ok; j++) {
+            /* ibz_set_from_str returns -1 on success, 0 on failure (mp.c:365),
+             * so normalise it rather than casting it straight to the ack byte. */
+            ok = parse_ibz(&chall_msk.m[i][j], &cursor) ? 1 : 0;
+            if (ok && chall_msk.m[i][j].bitlen < CHALLENGE_BITS + 1) {
+                ibz_set_bound(&chall_msk.m[i][j], CHALLENGE_BITS + 1);
+            }
+        }
+    }
+    chall_msk_valid = ok;
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
+/* 'e': run Algorithm 3.23 line 12 on a known challenge coefficient.
+ *
+ * The coefficient arrives as CHALLENGE_BYTES little-endian bytes in the command
+ * payload rather than through the ASCII buffer, so a trace costs one short
+ * serial exchange instead of a multi-kilobyte transfer. */
+uint8_t
+chall_eval(SS_ARGS)
+{
+    SS_UNUSED_HDR;
+    uint8_t ok = 0;
+    if (len == CHALLENGE_BYTES && chall_msk_valid) {
+        digit_t w[CHALLENGE_BYTES / sizeof(digit_t)];
+        for (unsigned i = 0; i < CHALLENGE_BYTES / sizeof(digit_t); i++) {
+            w[i] = (digit_t)buf[4 * i] | ((digit_t)buf[4 * i + 1] << 8) | ((digit_t)buf[4 * i + 2] << 16) |
+                   ((digit_t)buf[4 * i + 3] << 24);
+        }
+        chall_profile_reset();
+        ibz_set(&chall_vec.v[0], 1, CHALLENGE_BITS + 1);
+        ibz_copy_digits(&chall_vec.v[1], w, CHALLENGE_BYTES / sizeof(digit_t));
+        chall_mat_2x2_eval_triggered(&chall_out, &chall_msk, &chall_vec);
+        ok = 1;
+    }
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
+/* 'f': the result of the last 'e', plus the profile. Used to verify the board
+ * against the host and to read the cycle counts; it reveals the secret, so it
+ * exists for profiling runs only. */
+uint8_t
+chall_read(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    outlen = 0;
+    outbuf[0] = '\0';
+    append_ibz(&chall_out.v[0]);
+    append_ibz(&chall_out.v[1]);
+    append_kv("eval", chall_profile.eval_cycles);
+    for (int i = 0; i < 4; i++) {
+        char name[12] = "mul0";
+        name[3] = (char)('0' + i);
+        append_kv(name, chall_profile.mul_cycles[i]);
+    }
+    append_kv("secret_limbs", chall_profile.secret_limbs);
+    append_kv("known_limbs", chall_profile.known_limbs);
+    append_kv("secret_bitlen", chall_profile.secret_bitlen);
+    append_kv("known_bitlen", chall_profile.known_bitlen);
+    uint8_t ok = 1;
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
 uint8_t
 conj_profile_read(SS_ARGS)
 {
@@ -558,6 +652,10 @@ main(void)
     quat_ideal_init(&in_ideal_chall);
     quat_ideal_init(&in_ideal_commit);
     quat_alg_elem_init(&in_chall_split);
+    ibz_mat_2x2_init(&chall_msk);
+    ibz_vec_2_init(&chall_vec);
+    ibz_vec_2_init(&chall_out);
+    chall_msk_valid = 0;
     quat_ideal_init(&out_sk_chall_ideal);
     quat_alg_elem_init(&out_resp_quat);
     quat_alg_elem_init(&out_sk_chall_quat);
@@ -588,6 +686,9 @@ main(void)
     simpleserial_addcmd('l', 0, conj_len);
     simpleserial_addcmd('g', 2, conj_read);
     simpleserial_addcmd('p', 0, conj_profile_read);
+    simpleserial_addcmd('k', 0, chall_set_secret);
+    simpleserial_addcmd('e', CHALLENGE_BYTES, chall_eval);
+    simpleserial_addcmd('f', 0, chall_read);
 
     (void)keep_conj_core;
     while (1) {

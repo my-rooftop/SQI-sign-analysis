@@ -320,20 +320,35 @@ class Pico:
         self.maxADC = ctypes.c_int16()
         ps.ps3000aMaximumValue(self.chandle, ctypes.byref(self.maxADC))
 
+        # Allocate the capture buffers once and keep handing the driver the same
+        # pointers. Allocating fresh ones per arm() and re-registering them made
+        # the capture rate decay trace after trace until the scope stopped
+        # triggering at all, which only shows on a fast target where thousands of
+        # arms happen in a few minutes.
+        self.bufA = (ctypes.c_int16 * self.samples)()
+        self.bufB = (ctypes.c_int16 * self.samples)()
+        assert_pico_ok(ps.ps3000aSetDataBuffers(self.chandle, 0, self.bufA, None, self.samples, 0, 0))
+        assert_pico_ok(ps.ps3000aSetDataBuffers(self.chandle, 1, self.bufB, None, self.samples, 0, 0))
+
         print(f"PicoScope: {self.interval_ns:.3f} ns/sample "
               f"({self.samples_per_cycle:.1f} samples per "
               f"{TARGET_CLOCK_HZ / 1e6:.4f} MHz target cycle), "
               f"{samples} samples = {samples * self.interval_ns / 1e6:.3f} ms window, "
               f"pre={pre_samples}", flush=True)
 
-    def arm(self):
+    def arm(self, settle_s=0.01):
+        """Arm for a block capture.
+
+        The short settle matters for fast targets: RunBlock returns before the
+        scope will actually honour a trigger, and a target that fires 20 ms later
+        can slip through the gap. It never showed on the Algorithm 3.18 target,
+        where the trigger arrives seconds after arming.
+        """
         ps = self._ps
-        self.bufA = (ctypes.c_int16 * self.samples)()
-        self.bufB = (ctypes.c_int16 * self.samples)()
-        self._ok(ps.ps3000aSetDataBuffers(self.chandle, 0, self.bufA, None, self.samples, 0, 0))
-        self._ok(ps.ps3000aSetDataBuffers(self.chandle, 1, self.bufB, None, self.samples, 0, 0))
         self._ok(ps.ps3000aRunBlock(
             self.chandle, self.pre, self.post, self.timebase, 1, None, 0, None, None))
+        if settle_s:
+            time.sleep(settle_s)
 
     def get(self, timeout_s=600.0):
         ps = self._ps
