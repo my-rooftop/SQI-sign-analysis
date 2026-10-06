@@ -90,6 +90,29 @@ def score_hypotheses(hyps, b0, x, xn, nbits, batch=1 << 13):
     return out
 
 
+def cpa_all_samples(hyps, b0, Tc, Tn, nbits, batch=2048):
+    """max |corr| over every sample for each hypothesis.
+
+    Uses no knowledge of the key, so the POI it reports comes from the attack
+    itself. That makes the whole recovery non-profiled.
+    """
+    mask = np.uint64((1 << nbits) - 1)
+    nby = (nbits + 7) // 8
+    best = np.empty(len(hyps), np.float32)
+    arg = np.empty(len(hyps), np.int64)
+    for s0 in range(0, len(hyps), batch):
+        h = np.asarray(hyps[s0:s0 + batch], np.uint64)
+        M = hw_rows((h[:, None] * b0[None, :]) & mask, nby).astype(np.float32)
+        M -= M.mean(1, keepdims=True)
+        mn = np.sqrt((M * M).sum(1))
+        mn = np.where(mn == 0, np.float32(1e-30), mn)
+        R = np.abs((M @ Tc) / (mn[:, None] * Tn[None, :]))
+        j = R.argmax(1)
+        best[s0:s0 + len(h)] = R[np.arange(len(h)), j]
+        arg[s0:s0 + len(h)] = j
+    return best, arg
+
+
 def recover_limb(x, xn, b0, keep=16, truth=None, verbose=True):
     """Two-round candidate-list CPA for one 32-bit secret limb.
 
@@ -181,10 +204,13 @@ def main():
         poi = int(np.argmax(r))
         print(f"  profiled POI: sample {poi}, |corr| of the true product = {r[poi]:.4f}")
     if poi is None:
-        print("  no POI given; pass --find-poi or --poi", file=sys.stderr)
-        return 1
+        # Fully non-profiled: run round 1 across every sample and let the winning
+        # hypothesis nominate the POI. On this data it picks the same sample the
+        # key-derived search does, so --find-poi only saves compute.
+        print("  no POI given; round 1 will search every sample (non-profiled)")
     poi_local = poi
-    print(f"  attacking the single sample {poi}")
+    if poi is not None:
+        print(f"  attacking the single sample {poi}")
 
     counts = [int(x) for x in args.curve.split(",")] if args.curve else [args.traces or n_all]
     for n in counts:
@@ -192,7 +218,21 @@ def main():
         print(f"\n-- {n} traces --")
         Xc, Xn = prep(n)
         b0 = limbs[:n, 0]
-        x = Xc[:, poi_local].copy()
+        if poi_local is None:
+            Tc32 = Xc.astype(np.float32)
+            Tn32 = np.sqrt((Tc32 * Tc32).sum(0))
+            Tn32 = np.where(Tn32 == 0, np.float32(1e-30), Tn32)
+            s1, a1 = cpa_all_samples(np.arange(1 << 16, dtype=np.uint64),
+                                     b0.astype(np.uint64), Tc32, Tn32, 16)
+            order1 = np.argsort(s1)[::-1]
+            poi_n = int(a1[order1[0]])
+            if truth_known := (a0_true is not None):
+                r1 = int(np.flatnonzero(order1 == (a0_true & 0xFFFF))[0]) + 1
+                print(f"    round 1 over all {Xc.shape[1]} samples: true low 16 bits "
+                      f"at rank {r1}/65536; the attack nominates sample {poi_n}")
+            x = Xc[:, poi_n].copy()
+        else:
+            x = Xc[:, poi_local].copy()
         xn = np.sqrt((x * x).sum())
         got, _ = recover_limb(x, xn, b0.astype(np.uint64), keep=args.keep, truth=a0_true)
         nbytes_ok = sum(1 for k in range(4)
