@@ -17,6 +17,13 @@
  *   g  ->  read output chunk at index (big endian uint16)
  *   p  ->  write the cycle/limb profile into the output buffer
  *
+ * Algorithm 3.18 line 2 fast path (alpha injected, no full run):
+ *   u  ->  load one alpha_sk,chl
+ *   z  ->  run line 2 on it (trigger fires here)
+ *   q  ->  read the alpha that entered line 2, for scoring
+ *
+ * 'v', 'w' and 'y' are reserved by simpleserial_init and must not be reused.
+ *
  * Algorithm 3.23 line 12 target (secret matrix times known challenge coefficient):
  *   k  ->  load the fixed secret matrix Msk from the ASCII buffer
  *   e  ->  run the matrix-vector product on CHALLENGE_BYTES of challenge coefficient
@@ -71,6 +78,12 @@ static ibz_mat_2x2_t chall_msk;
 static ibz_vec_2_t chall_vec;
 static ibz_vec_2_t chall_out;
 static uint8_t chall_msk_valid;
+
+/* line 2 fast path: an alpha injected directly, so a campaign does not pay for a
+ * full Algorithm 3.18 run per trace. */
+static quat_alg_elem_t alpha_work;
+static quat_alg_elem_t alpha_pre;
+static uint8_t alpha_valid;
 static uint8_t last_bounds_applied;
 
 /* Keep the core reachable even if the linker gets clever about a static call. */
@@ -600,6 +613,108 @@ chall_read(SS_ARGS)
     return 0;
 }
 
+/* 'u': load one alpha_sk,chl into the line 2 working register.
+ *
+ * Not 'y': simpleserial_init reserves 'v', 'w' and 'y' for check_version,
+ * ss_get_commands and ss_num_commands. A second registration of a reserved
+ * letter is shadowed by the built-in, which answers with the command count --
+ * 0x11 here -- and silently desynchronises the link.
+ *
+ * Buffer layout matches conj_vector_host "alphas": a bounds line of five bitlen
+ * values, then denom and coord0..3 as hex. The bounds are restored with
+ * ibz_set_bound for the same reason the Algorithm 3.18 vectors carry them --
+ * ibz_set_from_str re-derives a tighter bound from the parsed magnitude, which
+ * would change how many limbs ibz_neg walks. */
+uint8_t
+conj_set_alpha(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    const char *cursor = inbuf;
+    int bounds[5];
+    int have = 0;
+
+    /* Only a comment, a blank line, or an "a <bounds>" line is header. Matching a
+     * bare letter would be wrong: a hex coordinate can legitimately begin with
+     * 'a' or 'c', so the bounds line is recognised by "a " specifically. */
+    while (*cursor == '#' || *cursor == '\n' || *cursor == '\r' ||
+           (*cursor == 'a' && (cursor[1] == ' ' || cursor[1] == '\t'))) {
+        if (*cursor == 'a') {
+            const char *q = cursor + 1;
+            have = 1;
+            for (int i = 0; i < 5; i++) {
+                if (!parse_int(&q, &bounds[i])) {
+                    have = 0;
+                    break;
+                }
+            }
+        }
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor++;
+        }
+        if (*cursor == '\n') {
+            cursor++;
+        }
+    }
+
+    uint8_t ok = parse_elem(&alpha_work, &cursor) ? 1 : 0;
+    if (ok && have) {
+        ibz_t *f[5] = { &alpha_work.denom,      &alpha_work.coord.v[0], &alpha_work.coord.v[1],
+                        &alpha_work.coord.v[2], &alpha_work.coord.v[3] };
+        for (int i = 0; i < 5; i++) {
+            if (bounds[i] > f[i]->bitlen && bounds[i] <= IBZ_NLIMBS * NUM_BITS_LIMB) {
+                ibz_set_bound(f[i], bounds[i]);
+            }
+        }
+    }
+    alpha_valid = ok;
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
+/* 'z': run Algorithm 3.18 line 2 on the loaded alpha. The trigger fires per
+ * CONJ_TRIG_MODE exactly as it does inside the full algorithm. */
+uint8_t
+conj_run_line2(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    uint8_t ok = 0;
+    if (alpha_valid) {
+        conj_profile_reset();
+        quat_alg_elem_copy(&alpha_pre, &alpha_work);
+        conj_run_conjugate(&alpha_work, NULL);
+        ok = 1;
+    }
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
+/* 'q': the limbs of the value that entered line 2, for scoring the attack.
+ * Not 'w' -- simpleserial_init reserves that for ss_get_commands, and a second
+ * registration is shadowed by the built-in. */
+uint8_t
+conj_read_alpha(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    outlen = 0;
+    outbuf[0] = '\0';
+    for (int i = 0; i < 4; i++) {
+        append_limbs(&alpha_pre.coord.v[i]);
+    }
+    for (int i = 0; i < 4; i++) {
+        append_ibz(&alpha_work.coord.v[i]);
+    }
+    append_kv("conjugate", conj_profile.conjugate_cycles);
+    uint8_t ok = 1;
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
 uint8_t
 conj_profile_read(SS_ARGS)
 {
@@ -652,6 +767,9 @@ main(void)
     quat_ideal_init(&in_ideal_chall);
     quat_ideal_init(&in_ideal_commit);
     quat_alg_elem_init(&in_chall_split);
+    quat_alg_elem_init(&alpha_work);
+    quat_alg_elem_init(&alpha_pre);
+    alpha_valid = 0;
     ibz_mat_2x2_init(&chall_msk);
     ibz_vec_2_init(&chall_vec);
     ibz_vec_2_init(&chall_out);
@@ -689,6 +807,9 @@ main(void)
     simpleserial_addcmd('k', 0, chall_set_secret);
     simpleserial_addcmd('e', CHALLENGE_BYTES, chall_eval);
     simpleserial_addcmd('f', 0, chall_read);
+    simpleserial_addcmd('u', 0, conj_set_alpha);
+    simpleserial_addcmd('z', 0, conj_run_line2);
+    simpleserial_addcmd('q', 0, conj_read_alpha);
 
     (void)keep_conj_core;
     while (1) {

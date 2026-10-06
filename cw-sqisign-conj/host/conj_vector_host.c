@@ -13,6 +13,7 @@
  *   gen  [seed_hex]            emit a board vector on stdout
  *   run  <vector_file>         run Alg 3.18 on a vector, print ground truth + KAT
  *   selftest [n]               generate+run n vectors, check upstream invariants
+ *   alphas <n> [seed]          emit n real alpha_sk,chl values entering line 2
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -586,6 +587,51 @@ cmd_run(const char *path)
     return bad;
 }
 
+/* Emit n real alpha_sk,chl values, each as it stands entering Algorithm 3.18
+ * line 2. Running the whole algorithm on the board costs ~13 s per trace, which
+ * makes a statistically useful MSB-recovery campaign impractical; generating the
+ * values here and driving line 2 directly on the board costs milliseconds and
+ * measures the identical window. */
+static int
+cmd_alphas(int n, const char *seed_hex)
+{
+    printf("# alpha_sk,chl values entering Algorithm 3.18 line 2\n");
+    printf("# per record: 'a' <bitlen x5> then denom, coord0..3 as hex\n");
+    printf("count %d\n", n);
+    for (int i = 0; i < n; i++) {
+        char seed[96];
+        snprintf(seed, sizeof(seed), "%s_%d", seed_hex ? seed_hex : "alpha", i);
+        rng_seed_from_hex(seed);
+        if (prng_seed() != 0) {
+            fprintf(stderr, "prng_seed failed at %d\n", i);
+            return 1;
+        }
+        prng_domain_ctx_t prng_key, prng_com, prng_res;
+        prng_domain_seed(&prng_key, DS_KEYGEN_DOMAIN);
+        prng_domain_seed(&prng_com, DS_COMMITMENT_DOMAIN);
+        prng_domain_seed(&prng_res, DS_RESPONSE_DOMAIN);
+
+        conj_vector_t v;
+        vector_init(&v);
+        if (!vector_generate(&v, &prng_key, &prng_com)) {
+            fprintf(stderr, "vector generation failed at %d\n", i);
+            return 1;
+        }
+        conj_result_t r;
+        result_init(&r);
+        run_alg318(&r, &v, &prng_res);
+
+        const quat_alg_elem_t *q = &r.sk_chall_quat_pre;
+        printf("a %d %d %d %d %d\n", q->denom.bitlen, q->coord.v[0].bitlen,
+               q->coord.v[1].bitlen, q->coord.v[2].bitlen, q->coord.v[3].bitlen);
+        print_ibz_bare(&q->denom);
+        for (int k = 0; k < 4; k++) {
+            print_ibz_bare(&q->coord.v[k]);
+        }
+    }
+    return 0;
+}
+
 static int
 cmd_selftest(int n)
 {
@@ -662,6 +708,13 @@ main(int argc, char **argv)
             return 2;
         }
         return cmd_run(argv[2]);
+    }
+    if (strcmp(argv[1], "alphas") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "alphas needs a count\n");
+            return 2;
+        }
+        return cmd_alphas(atoi(argv[2]), argc > 3 ? argv[3] : NULL);
     }
     if (strcmp(argv[1], "selftest") == 0) {
         return cmd_selftest(argc > 2 ? atoi(argv[2]) : 5);

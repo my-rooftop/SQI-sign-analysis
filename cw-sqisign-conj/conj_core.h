@@ -80,6 +80,13 @@ uint32_t conj_cycles_read(void);
  * sk_chall_quat_pre receives the value *before* line 2 (ground truth for
  * side-channel labels; pass NULL to skip).
  */
+/* Algorithm 3.18 line 2 on its own, with the trigger placed per CONJ_TRIG_MODE.
+ * `pre` receives the value entering the step (the side-channel label); pass NULL
+ * to skip. Lets a campaign drive line 2 directly with realistic alpha values
+ * instead of paying for a full Algorithm 3.18 run per trace -- the measured
+ * window is identical, only the surrounding code differs. */
+void conj_run_conjugate(quat_alg_elem_t *x, quat_alg_elem_t *pre);
+
 void conj_response_element(quat_ideal_t *sk_chall_ideal,
                           quat_alg_elem_t *resp_quat,
                           ibz_t *norm,

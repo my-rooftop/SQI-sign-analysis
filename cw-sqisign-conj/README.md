@@ -341,6 +341,65 @@ limb당 추출 가능 최대 = H(HW of 32-bit word) = 3.55 bit
 `√(2 ln S)/√N`이고, N=200·S=34734에서 0.283이 아니라 **0.323**이다. 분석기는 두 값을
 모두 출력하고 후자로 판정한다.
 
+## line 2에서 몇 비트까지 복구되는가 (20,000 trace 실측)
+
+### 고속 경로
+
+Alg 3.18 전체를 보드에서 돌리면 13.5 s/trace라 통계적으로 의미 있는 캠페인이 불가능하다.
+측정 구간은 line 2뿐이므로, **호스트에서 실제 Alg 3.18을 돌려** α를 뽑고
+(`conj_vector_host alphas`, 2000개에 7.4 s) 보드는 line 2만 실행한다
+(`u`/`z`/`q` 명령). 실행 코드와 트리거 위치는 동일하고 주변 명령만 다르며,
+캡처 시작 시 `alpha loaded exactly, Conjugate correct`로 검증한다.
+**238 ms/trace — 57배 빠르다.**
+
+### 결과
+
+프로파일드 템플릿, 프로파일링 16,000 / 공격 4,000 (held-out), 단일 trace 공격.
+
+| 대상 | 정확도 | 기준선 | z | 판정 |
+|---|---|---|---|---|
+| **부호 (좌표당 1 bit)** | **100.0%** | 50% | +62 | **완전 복구** |
+| MSB limb의 HW | 26.6–28.6% | 11–14% | +23~33 | 복구 |
+| LSB limb의 HW (대조) | 19.7–21.9% | 14% | +11~15 | 복구 |
+| magnitude bit-length | 27.4% | 27.5% | −0.0 | 기준선 |
+| **상위 T비트 (T = 1…8)** | 기준선과 동일 | | | **복구 안 됨** |
+
+HW 정보량 합계는 **18 limb에서 10.35 bit** (천장 64 bit).
+
+```
+복구됨:  부호 4 bit (완전) + HW 정보 10 bit  ->  약 14 bit
+복구 안 됨:  상위 비트 0 bit
+전체 비밀:  610 bit
+```
+
+### 왜 MSB가 안 나오는가
+
+HW는 복구되는데 **MSB 비트로 변환되지 않는다.** 두 가지가 동시에 막는다.
+
+1. **magnitude bit-length가 복구되지 않는다** (z ≈ 0). MSB가 몇 번째 비트인지 모르면
+   상위 비트를 지정할 수 없다. `bitlen`은 401로 고정이라 limb 개수가 값에 무관하고,
+   magnitude는 상위 limb의 *값*만 바꾸므로 구조적 흔적을 남기지 않는다.
+2. **HW는 limb 안에서 어느 비트가 켜졌는지 말해주지 않는다.** HW는 비트에 대해
+   대칭이므로, 상위 limb의 HW를 알아도 그 안의 비트 배치는 결정되지 않는다.
+
+앞서 확인한 "누설 함수가 `HW(32-bit word)` 하나뿐"이라는 결과와 일관된다.
+
+### 상위 비트 기반 복원 알고리즘에 쓸 수 있는가
+
+**이 연산만으로는 어렵다.** 상위 비트가 0 bit이므로 MSB를 입력으로 받는 알고리즘에
+줄 것이 없다. 다만 **부호 4 bit는 100% 확실하게** 나오므로, 부호를 제약으로 쓸 수 있는
+형태라면 활용 가능하다.
+
+### 실행
+
+```bash
+./conj_vector_host alphas 20000 run1 > /tmp/alphas.txt
+make clean PLATFORM=CW308_STM32F4 && make PLATFORM=CW308_STM32F4 CONJ_TRIG_MODE=2
+~/.cwvenv/bin/python3 capture_line2_pico.py --alphas /tmp/alphas.txt -n 20000
+~/.cwvenv/bin/python3 msb_recover_line2.py   --npz /tmp/sqisign_line2.npz
+~/.cwvenv/bin/python3 recover_conj_template.py --npz /tmp/sqisign_line2.npz --no-bits
+```
+
 ## 두 번째 타겟: Sign Algorithm 3.23 line 12 (복구 성공)
 
 Alg 3.18 line 2가 복구 불가로 판명된 뒤, 알려진 값이 비밀과 만나는 지점을 찾아 옮긴

@@ -165,6 +165,22 @@ conjugate_triggered(quat_alg_elem_t *conj, const quat_alg_elem_t *x)
 #endif
 }
 
+void
+conj_run_conjugate(quat_alg_elem_t *x, quat_alg_elem_t *pre)
+{
+    if (pre != NULL) {
+        quat_alg_elem_copy(pre, x);
+    }
+    uint32_t t = conj_cycles_read();
+#if CONJ_OUT_OF_PLACE
+    conjugate_triggered(&conj_scratch, x);
+    quat_alg_elem_copy(x, &conj_scratch);
+#else
+    conjugate_triggered(x, x);
+#endif
+    conj_profile.conjugate_cycles = cycles_since(t);
+}
+
 /* ---------------------------------------------- Algorithm 3.18, full flow */
 
 void
@@ -225,14 +241,7 @@ conj_response_element(quat_ideal_t *sk_chall_ideal,
         probe_ibz_limbs(&sk_chall_quat->coord.v[3]);
 #endif
 
-        t = conj_cycles_read();
-#if CONJ_OUT_OF_PLACE
-        conjugate_triggered(&conj_scratch, sk_chall_quat);
-        quat_alg_elem_copy(sk_chall_quat, &conj_scratch);
-#else
-        conjugate_triggered(sk_chall_quat, sk_chall_quat);
-#endif
-        conj_profile.conjugate_cycles = cycles_since(t);
+        conj_run_conjugate(sk_chall_quat, NULL);
     }
 
     /* line 5a: IdealMultiplication(I'_sk,chl, I_com) */
