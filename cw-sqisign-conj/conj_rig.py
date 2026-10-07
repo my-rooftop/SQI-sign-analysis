@@ -360,6 +360,7 @@ class Pico:
                 break
             time.sleep(0.001)
         if ready.value == 0:
+            ps.ps3000aStop(self.chandle)
             raise TimeoutError(f"PicoScope did not trigger within {timeout_s:.0f}s")
         overflow = ctypes.c_int16()
         got = ctypes.c_int32(self.samples)
@@ -367,6 +368,11 @@ class Pico:
             self.chandle, 0, ctypes.byref(got), 0, 0, 0, ctypes.byref(overflow)))
         power = np.array(self._adc2mV(self.bufA, self.cha_range, self.maxADC), dtype=np.float32)
         trig = np.array(self._adc2mV(self.bufB, self.chb_range, self.maxADC), dtype=np.float32)
+        # Stop before the next RunBlock. Driving RunBlock repeatedly without it
+        # degrades the capture rate over a few hundred to a few thousand arms
+        # until the scope stops honouring the trigger entirely -- only visible on
+        # a fast target, where that many arms happen in minutes.
+        ps.ps3000aStop(self.chandle)
         return power, trig, overflow.value
 
     def close(self):

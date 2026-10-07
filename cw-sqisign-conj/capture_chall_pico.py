@@ -175,7 +175,14 @@ def main():
                 is_fixed = (i % 2 == 0)
             a = fixed_coeff if is_fixed else rnd.getrandbits(CHALLENGE_BITS)
 
-            power, trig, overflow = one_capture(a)
+            try:
+                power, trig, overflow = one_capture(a)
+            except TimeoutError as e:
+                # The scope stops honouring triggers after some thousands of
+                # arms. Keep what was captured rather than losing the run.
+                print(f"\n{e} at trace {i}; keeping the {len(traces)} traces so far",
+                      flush=True)
+                break
 
             if args.crop:
                 pulses = rig.trigger_pulses(trig)
