@@ -188,6 +188,7 @@ verdict: LEAKAGE DETECTED
 ```
 
 대조군(fixed vs fixed)이 임계값 아래이므로 리그 드리프트가 아니라 데이터 의존 누설이다.
+(그림에는 위 두 패널만 실었다 — 대조군 수치는 위 출력에 있다.)
 t-trace는 균일하지 않고 **4개 밴드로 뭉치며**, 밴드 중심 간격이 ~250 cycle로 측정된
 좌표당 비용 247 cycle과 일치한다 — `coord[0]` copy와 `coord[1..3]` negate에 대응한다.
 
