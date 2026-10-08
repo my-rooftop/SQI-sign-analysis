@@ -94,6 +94,28 @@ def add_carry_in(known_limbs, P, idx):
     return carry
 
 
+def public_projector(b):
+    """Projector onto the span of the public coefficient's Hamming weights.
+
+    The hypothesis a = 1 predicts low32(1 * b0) = b0, so its model is just the
+    Hamming weight of the public coefficient -- and HW(b0) leaks hard on its own
+    (|corr| 0.43 at one sample), carrying no secret. Left in, that degenerate
+    hypothesis beats the real one on roughly a third of trace ranges. Projecting
+    the public Hamming weights out of both the traces and the models removes it:
+    anything proportional to them scores zero.
+    """
+    n = b.shape[0]
+    cols = [np.ones(n)]
+    for j in range(b.shape[1]):
+        cols.append(hw_rows(b[:, j][None, :], 4)[0].astype(np.float64))
+    C = np.vstack(cols).T
+    return C @ np.linalg.pinv(C)
+
+
+def residualise(M, P):
+    return M - (M @ P.T)
+
+
 def score_all_samples(models, Tc, Tn, batch=2048):
     best = np.empty(models.shape[0], np.float32)
     arg = np.empty(models.shape[0], np.int64)
@@ -121,16 +143,17 @@ def score_at(models, x, xn, batch=1 << 13):
 
 
 def recover_limb(predict, Tc32, Tn32, Xc, keep, truth=None, label="", batch=1 << 13,
-                 stride=1, window=None):
+                 stride=1, window=None, P=None):
     """Two rounds: low 16 bits over all samples, then full 32 at the chosen POI.
 
     `predict(hyps, nbits)` returns the modelled intermediate, masked to nbits,
     for each hypothesis of the limb's low bits.
     """
     hyps = np.arange(1 << 16, dtype=np.uint64)
-    models = np.empty((len(hyps), Tc32.shape[0]), dtype=np.int16)
+    models = np.empty((len(hyps), Tc32.shape[0]), dtype=np.float32)
     for s in range(0, len(hyps), batch):
-        models[s:s + batch] = hw_rows(predict(hyps[s:s + batch], 16), 2)
+        M = hw_rows(predict(hyps[s:s + batch], 16), 2).astype(np.float32)
+        models[s:s + batch] = residualise(M, P) if P is not None else M
     # Round 1 on a strided subset: the correlation peak spans a clock cycle, about
     # 17 samples here, so sampling every few loses nothing and cuts the search
     # over a 99k-sample window from minutes to seconds per limb.
@@ -159,6 +182,8 @@ def recover_limb(predict, Tc32, Tn32, Xc, keep, truth=None, label="", batch=1 <<
         full = c | (hi << np.uint64(16))
         for s in range(0, len(full), batch):
             M = hw_rows(predict(full[s:s + batch], 32), 4).astype(np.float64)
+            if P is not None:
+                M = residualise(M, P)
             M -= M.mean(axis=1, keepdims=True)
             mn = np.sqrt((M * M).sum(axis=1))
             mn = np.where(mn == 0, np.finfo(np.float64).tiny, mn)
@@ -182,7 +207,7 @@ def main():
     p = argparse.ArgumentParser(description="Full Msk recovery from Alg 3.23 line 12")
     p.add_argument("--npz", required=True)
     p.add_argument("--traces", type=int, default=3000)
-    p.add_argument("--keep", type=int, default=16)
+    p.add_argument("--keep", type=int, default=32)
     p.add_argument("--limbs", type=int, default=4)
     p.add_argument("--stride", type=int, default=4,
                    help="sample stride for the round 1 sweep; the peak is a clock "
@@ -212,19 +237,34 @@ def main():
     print(f"  {n} traces, {T.shape[1]} samples; non-profiled\n")
 
     got = {}
-    # Operation boundaries from the firmware's own cycle profile (command 'f'):
-    # mul0 905, copy, mul1 1560, add, mul2 905, copy, mul3 1533, add, eval 5894.
-    # The copies and adds share the remaining 991 cycles. Nothing here depends on
-    # the key -- these are properties of the implementation.
+    # Operation boundaries measured directly, from the per-multiply trigger
+    # pulses of CONJ_TRIG_MODE=11, rather than estimated from the cycle profile.
+    # The estimate had the m10 window overlapping m11's multiply, so the m10
+    # attack picked up m11's leak instead of its own.
     S = T.shape[1]
-    cyc = S / 5894.0
-    def win(c0, c1, pad=0.04):
-        a = int(max(0, (c0 - pad * 5894) * cyc))
-        b = int(min(S, (c1 + pad * 5894) * cyc))
-        return (a, b)
-    windows = {"m01": win(1153, 2713), "m11": win(4114, 5647),
-               "m00": win(2713, 2961), "m10": win(5647, 5894)}
-    print(f"  연산 구간 (샘플): " + ", ".join(f"{k}={v}" for k, v in windows.items()) + "\n")
+    if "pulse_bounds" in d and len(d["pulse_bounds"]) == 4:
+        pb = d["pulse_bounds"]
+        mul = [(int(a), int(b_)) for a, b_ in pb]
+        windows = {
+            "m01": mul[1],                       # ibz_mul(m01, achl)
+            "m11": mul[3],                       # ibz_mul(m11, achl)
+            "m00": (mul[1][1], mul[2][0]),       # add matvec0 += m01*achl
+            "m10": (mul[3][1], S),               # add matvec1 += m11*achl
+        }
+        src = "펄스 실측"
+    else:
+        cyc = S / 5894.0
+        windows = {"m01": (int(1153 * cyc), int(2713 * cyc)),
+                   "m11": (int(4114 * cyc), int(5647 * cyc)),
+                   "m00": (int(2713 * cyc), int(2961 * cyc)),
+                   "m10": (int(5647 * cyc), S)}
+        src = "사이클 추정"
+    print(f"  연산 구간 ({src}): " + ", ".join(f"{k}={v}" for k, v in windows.items()))
+    bad = [k for k, (a, b_) in windows.items() if b_ - a < 100]
+    if bad:
+        print(f"  경고: 창이 너무 좁음 {bad}")
+    print(f"  공개값 HW 투영 제거: 켜짐\n")
+    PROJ = public_projector(b)  # 공개값 HW 투영 (곱 결과 P 와 이름 분리)
 
     for mul_idx, add_idx, mul_name, add_name in ((1, 0, "m01", "m00"), (3, 2, "m11", "m10")):
         # --- the entry that multiplies achl ---
@@ -240,7 +280,7 @@ def main():
                 return (base[None, :] + ((h[:, None] * b0[None, :]) & MASK32)) & mask
 
             v = recover_limb(predict, Tc32, Tn32, Xc, args.keep, truth, f"limb {i}",
-                                 stride=args.stride, window=windows[mul_name])
+                                 stride=args.stride, window=windows[mul_name], P=PROJ)
             limbs.append(v)
             if v != truth:
                 break
@@ -262,7 +302,7 @@ def main():
                     return (h[:, None] + Pk[None, :] + cin[None, :]) & mask
 
                 v = recover_limb(predict, Tc32, Tn32, Xc, args.keep, truth, f"limb {k}",
-                                     stride=args.stride, window=windows[add_name])
+                                     stride=args.stride, window=windows[add_name], P=PROJ)
                 alimbs.append(v)
                 if v != truth:
                     break

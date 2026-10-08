@@ -78,6 +78,9 @@ def main():
     p.add_argument("--coeff-seed", type=int, default=12345)
     p.add_argument("--crop", action="store_true", default=True)
     p.add_argument("--no-crop", dest="crop", action="store_false")
+    p.add_argument("--tail", type=int, default=9000,
+                   help="samples to keep past the last trigger pulse, so the "
+                        "trailing add stays in the window")
     p.add_argument("--out", default=None)
     p.add_argument("--plot", default=None)
     args = p.parse_args()
@@ -101,6 +104,7 @@ def main():
     target = cw.target(scope)
     pico = None
     traces, coeffs, groups = [], [], []
+    pulse_bounds = []
 
     try:
         scope.default_setup()
@@ -188,11 +192,22 @@ def main():
                 pulses = rig.trigger_pulses(trig)
                 if not pulses:
                     raise RuntimeError(f"trace {i}: no trigger pulse")
-                power = power[pulses[0][0]:pulses[-1][1]]
+                # Keep a tail past the last pulse. The final operation of
+                # ibz_mat_2x2_eval is an add that happens after the last multiply,
+                # so cropping at the last falling edge drops it entirely -- which
+                # is what left Msk[1][0] with no target intermediate in the data.
+                power = power[pulses[0][0]:min(len(power), pulses[-1][1] + args.tail)]
 
             traces.append(power.astype(np.float32))
             coeffs.append(a)
             groups.append(1 if is_fixed else 0)
+            # Trigger pulse boundaries, relative to the crop. With mode 11 these
+            # mark each multiply exactly, which beats deriving the operation
+            # windows from the cycle profile -- that estimate overlapped the
+            # m10 and m11 windows and let one attack pick up the other's leak.
+            if pulse_bounds is not None:
+                base = pulses[0][0] if args.crop else 0
+                pulse_bounds.append([(s0 - base, e0 - base) for s0, e0, _ in pulses])
 
             if i == 0 or (i + 1) % 100 == 0 or i == args.traces - 1:
                 rate = (time.time() - t0) / (i + 1)
@@ -229,6 +244,8 @@ def main():
         group=np.array(groups, dtype=np.uint8),
         coeff_limbs=limbs,
         coeff_hex=np.array([f"{a:032x}" for a in coeffs]),
+        pulse_bounds=np.array(pulse_bounds[0] if pulse_bounds else [], dtype=np.int64),
+        n_pulses=np.int64(len(pulse_bounds[0]) if pulse_bounds else 0),
         secret_hex=np.array([f"{m:032x}" for m in msk]),
         secret_seed=np.int64(args.secret_seed),
         interval_ns=np.float32(pico.interval_ns if pico else 0),
