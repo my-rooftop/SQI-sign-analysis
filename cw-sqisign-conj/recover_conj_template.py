@@ -45,9 +45,18 @@ import sys
 
 import numpy as np
 
-# Limbs that are entirely value, per coordinate (the rest are the boundary limb
-# and sign extension); see README.
-CLEAN_LIMBS = {0: 7, 1: 7, 2: 2, 3: 2}
+def clean_limbs(d, c, n):
+    """Limbs of coordinate c that lie entirely below the magnitude.
+
+    Derived from the data rather than hardcoded: alpha_sk,chl at line 2 is about
+    234/234/71/71 bits wide, alpha_rsp at line 5 about 266/267/104/103, so the
+    counts differ per target.
+    """
+    key = f"c{c}_magnitude_bits"
+    if key not in d:
+        return 0
+    m = int(np.median(d[key][:n]))
+    return max(0, m // 32)
 
 
 # ----------------------------------------------------------------- utilities
@@ -202,7 +211,7 @@ def run(npz, n_poi, min_gap, prof_n, seed, do_bits, quiet=False):
 
     hw_rows, bit_rows = [], []
     for c in (0, 1, 2, 3):
-        for k in range(CLEAN_LIMBS[c]):
+        for k in range(clean_limbs(d, c, len(prof) + len(att))):
             key = f"c{c}_limb{k}"
             if key not in d:
                 continue
@@ -282,7 +291,7 @@ def main():
     h_hw = entropy_bits(pk)
     print(f"\n-- recovery budget --")
     print(f"  secret: {args.secret_bits} bits of alpha_sk,chl across "
-          f"{sum(CLEAN_LIMBS.values())} fully-informative limbs (+ boundary limbs and 4 signs)")
+          f"{len(hw_rows)} fully-informative limbs (+ boundary limbs and 4 signs)")
     print(f"  ceiling if every limb's Hamming weight were known exactly: "
           f"{len(hw_rows)} x {h_hw:.2f} = {len(hw_rows) * h_hw:.0f} bits")
     print(f"  measured: {gain:.0f} bits")

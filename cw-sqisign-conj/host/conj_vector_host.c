@@ -14,6 +14,7 @@
  *   run  <vector_file>         run Alg 3.18 on a vector, print ground truth + KAT
  *   selftest [n]               generate+run n vectors, check upstream invariants
  *   alphas <n> [seed]          emit n real alpha_sk,chl values entering line 2
+ *   responses <n> [seed]       emit n line 5 records (lattice, sample vector, alpha_rsp)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -632,6 +633,105 @@ cmd_alphas(int n, const char *seed_hex)
     return 0;
 }
 
+/* Emit n line 5 records. Each is the product lattice, the accepted sample
+ * vector and the radius bound that quat_lattice_sample_from_ball used, plus
+ * alpha_rsp for scoring.
+ *
+ * The rejection loop runs a data-dependent number of times and costs seconds on
+ * the board; the formation after it runs once. Capturing the formation with the
+ * real x is both faster and better aligned than tracing the whole subroutine. */
+static int
+cmd_responses(int n, const char *seed_hex)
+{
+    printf("# Algorithm 3.18 line 5: product lattice, accepted sample vector, alpha_rsp\n");
+    printf("# per record: 'r' <radius_bound> <bitlen x21>, then denom, basis[0..3][0..3],\n");
+    printf("#             x[0..3], then (for scoring) alpha_rsp denom and coord0..3\n");
+    printf("count %d\n", n);
+
+    for (int i = 0; i < n; i++) {
+        char seed[96];
+        snprintf(seed, sizeof(seed), "%s_%d", seed_hex ? seed_hex : "resp", i);
+        rng_seed_from_hex(seed);
+        if (prng_seed() != 0) {
+            fprintf(stderr, "prng_seed failed at %d\n", i);
+            return 1;
+        }
+        prng_domain_ctx_t prng_key, prng_com, prng_res;
+        prng_domain_seed(&prng_key, DS_KEYGEN_DOMAIN);
+        prng_domain_seed(&prng_com, DS_COMMITMENT_DOMAIN);
+        prng_domain_seed(&prng_res, DS_RESPONSE_DOMAIN);
+
+        conj_vector_t v;
+        vector_init(&v);
+        if (!vector_generate(&v, &prng_key, &prng_com)) {
+            fprintf(stderr, "vector generation failed at %d\n", i);
+            return 1;
+        }
+
+        /* Reproduce Algorithm 3.18 up to the point line 5 samples. */
+        quat_ideal_t sk_chall_ideal;
+        quat_alg_elem_t gen;
+        quat_lattice_t prod;
+        ibz_t bound, lattice_content;
+        quat_ideal_init(&sk_chall_ideal);
+        quat_alg_elem_init(&gen);
+        quat_lattice_init(&prod);
+        ibz_init(&bound);
+        ibz_init(&lattice_content);
+
+        quat_ideal_intersect_O0(&sk_chall_ideal, &v.ideal_chall, &v.sk_ideal, &v.chall_split);
+        if (!quat_ideal_small_equivalent_coprime(
+                &gen, &sk_chall_ideal, &sk_chall_ideal, &ibz_const_zero, &PRNG_default_domain)) {
+            fprintf(stderr, "EquivalentCoprimeIdeal failed at %d\n", i);
+            return 1;
+        }
+        quat_alg_conj(&gen, &gen);
+        quat_ideal_mul_O0(&prod, &sk_chall_ideal, &v.ideal_commit);
+        ibz_div_2exp(&lattice_content, &prod.basis.m[0][0], 1);
+
+        int e = RESPONSE_BITS - 1;
+        ibz_mul_2exp(&bound, &ibz_const_one, e);
+        ibz_sub(&bound, &bound, &ibz_const_one);
+        ibz_set_bound(&bound, e + 1);
+
+        quat_alg_elem_t rsp;
+        ibz_vec_4_t xs;
+        ibz_t norm;
+        quat_alg_elem_init(&rsp);
+        ibz_vec_4_init(&xs);
+        ibz_init(&norm);
+        if (!conj_sample_from_ball_capture(&rsp, &norm, &xs, &prod, &bound, &prng_res)) {
+            fprintf(stderr, "sampling failed at %d\n", i);
+            return 1;
+        }
+
+        printf("r %d %d", ibz_get_bound(&bound), prod.denom.bitlen);
+        for (int a = 0; a < 4; a++) {
+            for (int b = 0; b < 4; b++) {
+                printf(" %d", prod.basis.m[a][b].bitlen);
+            }
+        }
+        for (int a = 0; a < 4; a++) {
+            printf(" %d", xs.v[a].bitlen);
+        }
+        printf("\n");
+        print_ibz_bare(&prod.denom);
+        for (int a = 0; a < 4; a++) {
+            for (int b = 0; b < 4; b++) {
+                print_ibz_bare(&prod.basis.m[a][b]);
+            }
+        }
+        for (int a = 0; a < 4; a++) {
+            print_ibz_bare(&xs.v[a]);
+        }
+        print_ibz_bare(&rsp.denom);
+        for (int a = 0; a < 4; a++) {
+            print_ibz_bare(&rsp.coord.v[a]);
+        }
+    }
+    return 0;
+}
+
 static int
 cmd_selftest(int n)
 {
@@ -715,6 +815,13 @@ main(int argc, char **argv)
             return 2;
         }
         return cmd_alphas(atoi(argv[2]), argc > 3 ? argv[3] : NULL);
+    }
+    if (strcmp(argv[1], "responses") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "responses needs a count\n");
+            return 2;
+        }
+        return cmd_responses(atoi(argv[2]), argc > 3 ? argv[3] : NULL);
     }
     if (strcmp(argv[1], "selftest") == 0) {
         return cmd_selftest(argc > 2 ? atoi(argv[2]) : 5);

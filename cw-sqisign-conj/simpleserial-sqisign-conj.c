@@ -22,6 +22,11 @@
  *   z  ->  run line 2 on it (trigger fires here)
  *   q  ->  read the alpha that entered line 2, for scoring
  *
+ * Algorithm 3.18 line 5 fast path (lattice and sample vector injected):
+ *   b  ->  load the product lattice, the sample vector and the radius bound
+ *   m  ->  form alpha_rsp from them (trigger fires here)
+ *   o  ->  read alpha_rsp back, for scoring
+ *
  * 'v', 'w' and 'y' are reserved by simpleserial_init and must not be reused.
  *
  * Algorithm 3.23 line 12 target (secret matrix times known challenge coefficient):
@@ -84,6 +89,15 @@ static uint8_t chall_msk_valid;
 static quat_alg_elem_t alpha_work;
 static quat_alg_elem_t alpha_pre;
 static uint8_t alpha_valid;
+
+/* Algorithm 3.18 line 5 fast path: the product lattice and the accepted sample
+ * vector are injected, so the board runs only the formation of alpha_rsp and
+ * not the seconds-long rejection sampling that precedes it. */
+static quat_lattice_t resp_lat;
+static ibz_vec_4_t resp_x;
+static quat_alg_elem_t resp_out;
+static int resp_radius_bound;
+static uint8_t resp_valid;
 static uint8_t last_bounds_applied;
 
 /* Keep the core reachable even if the linker gets clever about a static call. */
@@ -715,6 +729,113 @@ conj_read_alpha(SS_ARGS)
     return 0;
 }
 
+/* 'b': load the product lattice, the accepted sample vector and the radius bound
+ * for one line 5 formation. Buffer layout, hex unless noted:
+ *   r <radius_bound> <denom bitlen> <16 basis bitlens> <4 x bitlens>   (decimal)
+ *   denom, basis[0][0..3], basis[1][0..3], basis[2][0..3], basis[3][0..3],
+ *   x[0..3] */
+uint8_t
+resp_set_input(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    const char *cursor = inbuf;
+    int bounds[21];
+    int have = 0;
+
+    while (*cursor == '#' || *cursor == '\n' || *cursor == '\r' ||
+           (*cursor == 'r' && (cursor[1] == ' ' || cursor[1] == '\t'))) {
+        if (*cursor == 'r') {
+            const char *q = cursor + 1;
+            have = parse_int(&q, &resp_radius_bound);
+            for (int i = 0; i < 21 && have; i++) {
+                have = parse_int(&q, &bounds[i]);
+            }
+        }
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor++;
+        }
+        if (*cursor == '\n') {
+            cursor++;
+        }
+    }
+
+    uint8_t ok = parse_ibz(&resp_lat.denom, &cursor) ? 1 : 0;
+    for (int i = 0; i < 4 && ok; i++) {
+        for (int j = 0; j < 4 && ok; j++) {
+            ok = parse_ibz(&resp_lat.basis.m[i][j], &cursor) ? 1 : 0;
+        }
+    }
+    for (int i = 0; i < 4 && ok; i++) {
+        ok = parse_ibz(&resp_x.v[i], &cursor) ? 1 : 0;
+    }
+
+    if (ok && have) {
+        ibz_t *f[21];
+        int k = 0;
+        f[k++] = &resp_lat.denom;
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                f[k++] = &resp_lat.basis.m[i][j];
+            }
+        }
+        for (int i = 0; i < 4; i++) {
+            f[k++] = &resp_x.v[i];
+        }
+        for (int i = 0; i < 21; i++) {
+            if (bounds[i] > f[i]->bitlen && bounds[i] <= IBZ_NLIMBS * NUM_BITS_LIMB) {
+                ibz_set_bound(f[i], bounds[i]);
+            }
+        }
+    }
+    resp_valid = ok;
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
+/* 'm': form alpha_rsp from the loaded lattice and sample vector. The trigger
+ * fires per CONJ_TRIG_MODE exactly as it does inside the full algorithm. */
+uint8_t
+resp_run(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    uint8_t ok = 0;
+    if (resp_valid) {
+        conj_profile_reset();
+        conj_run_response_formation(&resp_out, &resp_lat, &resp_x, resp_radius_bound);
+        ok = 1;
+    }
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
+/* 'o': alpha_rsp as limbs and as values, for scoring. */
+uint8_t
+resp_read(SS_ARGS)
+{
+    (void)buf;
+    (void)len;
+    SS_UNUSED_HDR;
+    outlen = 0;
+    outbuf[0] = '\0';
+    for (int i = 0; i < 4; i++) {
+        append_limbs(&resp_out.coord.v[i]);
+    }
+    append_ibz(&resp_out.denom);
+    for (int i = 0; i < 4; i++) {
+        append_ibz(&resp_out.coord.v[i]);
+    }
+    append_kv("formation", conj_profile.formation_cycles);
+    append_kv("eval", conj_profile.eval_cycles);
+    append_kv("normalize", conj_profile.normalize_cycles);
+    uint8_t ok = 1;
+    simpleserial_put('r', 1, &ok);
+    return 0;
+}
+
 uint8_t
 conj_profile_read(SS_ARGS)
 {
@@ -767,6 +888,10 @@ main(void)
     quat_ideal_init(&in_ideal_chall);
     quat_ideal_init(&in_ideal_commit);
     quat_alg_elem_init(&in_chall_split);
+    quat_lattice_init(&resp_lat);
+    ibz_vec_4_init(&resp_x);
+    quat_alg_elem_init(&resp_out);
+    resp_valid = 0;
     quat_alg_elem_init(&alpha_work);
     quat_alg_elem_init(&alpha_pre);
     alpha_valid = 0;
@@ -810,6 +935,9 @@ main(void)
     simpleserial_addcmd('u', 0, conj_set_alpha);
     simpleserial_addcmd('z', 0, conj_run_line2);
     simpleserial_addcmd('q', 0, conj_read_alpha);
+    simpleserial_addcmd('b', 0, resp_set_input);
+    simpleserial_addcmd('m', 0, resp_run);
+    simpleserial_addcmd('o', 0, resp_read);
 
     (void)keep_conj_core;
     while (1) {

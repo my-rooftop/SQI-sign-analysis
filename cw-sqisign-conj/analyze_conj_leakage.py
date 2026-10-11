@@ -273,7 +273,12 @@ def do_snr(path, plot_path, coords, top_n, hw_bins, min_class):
                              "peak": -1, "kind": "constant"})
                 continue
             r_hw = corr_per_sample(traces, hw)
-            r_neg = corr_per_sample(traces, d[f"c{c}_limb{k}_neg_hw"])
+            # HW(~limb) is the complementary hypothesis a CPA attacker also has
+            # to test. Older captures stored it; derive it when they did not.
+            neg_key = f"c{c}_limb{k}_neg_hw"
+            neg = d[neg_key] if neg_key in d else np.array(
+                [32 - int(v).bit_count() for v in lv], dtype=np.uint8)
+            r_neg = corr_per_sample(traces, neg)
 
             # The correlation argmax is the more stable locator, so the reported
             # point of interest is where |corr(HW)| peaks; SNR is then read at the

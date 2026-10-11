@@ -65,6 +65,10 @@ typedef struct
     uint32_t conj_bitlen[4];       /* bitlen of each coordinate at line 2 */
     uint32_t equiv_ok;
     uint32_t sample_ok;
+    uint32_t formation_cycles;      /* line 5: eval + denom copy + normalize */
+    uint32_t eval_cycles;           /* line 5: ibz_mat_4x4_eval alone */
+    uint32_t normalize_cycles;      /* line 5: quat_alg_normalize */
+    uint32_t resp_bitlen[4];        /* bitlen of alpha_rsp's coordinates */
 } conj_profile_t;
 
 extern volatile conj_profile_t conj_profile;
@@ -86,6 +90,45 @@ uint32_t conj_cycles_read(void);
  * instead of paying for a full Algorithm 3.18 run per trace -- the measured
  * window is identical, only the surrounding code differs. */
 void conj_run_conjugate(quat_alg_elem_t *x, quat_alg_elem_t *pre);
+
+/* ---------------------------------------------------------------------------
+ * Algorithm 3.18 line 5, RandomBoundedElement.
+ *
+ * quat_lattice_sample_from_ball (lattice.c:159) rejection-samples a vector x and
+ * then forms the response quaternion from it:
+ *
+ *     ibz_mat_4x4_eval(&res->coord, &lat.basis, &x);   // coord[i] = sum_j b[i][j]*x[j]
+ *     ibz_copy(&res->denom, &lat.denom);
+ *     quat_alg_normalize(res);
+ *
+ * The rejection loop runs a data-dependent number of times, so the whole
+ * subroutine does not align trace to trace. The formation runs exactly once
+ * after acceptance, so triggering it alone gives the same deterministic
+ * alignment line 2 had. Unlike Conjugate, alpha_rsp is *formed* by a
+ * multiply-accumulate, which is the structure that leaks in Section 5.2.
+ *
+ * Trigger modes 15-17 (continuing conj_core's table):
+ *   15  the whole formation: eval, denom copy, normalize
+ *   16  ibz_mat_4x4_eval only -- the multiply-accumulate
+ *   17  one pulse per output coordinate inside the eval -> 4 aligned segments
+ *       (each ~9.7k cycles; needs a long capture window)
+ *   18  one pulse per limb-wise write-out of a finished coordinate -> 4 short
+ *       aligned segments carrying the complete formed value
+ * ------------------------------------------------------------------------- */
+void conj_run_response_formation(quat_alg_elem_t *res,
+                                 const quat_lattice_t *lat,
+                                 const ibz_vec_4_t *x,
+                                 int radius_bound);
+
+/* Faithful copy of quat_lattice_sample_from_ball that also returns the accepted
+ * sample vector, so a campaign can replay the formation on the board with the
+ * exact x the real routine would have used. Host build only. */
+int conj_sample_from_ball_capture(quat_alg_elem_t *res,
+                                  ibz_t *res_ideal_norm,
+                                  ibz_vec_4_t *x_out,
+                                  const quat_lattice_t *lattice,
+                                  const ibz_t *radius,
+                                  prng_domain_ctx_t *prng_domain);
 
 void conj_response_element(quat_ideal_t *sk_chall_ideal,
                           quat_alg_elem_t *resp_quat,

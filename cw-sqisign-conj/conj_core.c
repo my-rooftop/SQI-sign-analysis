@@ -181,6 +181,170 @@ conj_run_conjugate(quat_alg_elem_t *x, quat_alg_elem_t *pre)
     conj_profile.conjugate_cycles = cycles_since(t);
 }
 
+/* ------------------------------------------- Algorithm 3.18, line 5 target */
+
+/* ibz_mat_4x4_eval (dim4.c:344) with a trigger pulse per output coordinate.
+ * Arithmetic identical to the vendored function; only mode 17 uses this, every
+ * other mode calls the vendored one. */
+static void
+mat_4x4_eval_triggered(ibz_vec_4_t *res, const ibz_mat_4x4_t *mat, const ibz_vec_4_t *vec)
+{
+    ibz_vec_4_t sum;
+    ibz_t prod;
+    ibz_init(&prod);
+    ibz_vec_4_init(&sum);
+    for (int i = 0; i < 4; i++) {
+        ibz_set(&sum.v[i], 0, 0);
+    }
+    for (int i = 0; i < 4; i++) {
+#if CONJ_TRIG_MODE == 17
+        trigger_high();
+#endif
+        for (int j = 0; j < 4; j++) {
+            ibz_mul(&prod, &mat->m[i][j], &vec->v[j]);
+            ibz_add(&(sum.v[i]), &(sum.v[i]), &prod);
+        }
+#if CONJ_TRIG_MODE == 17
+        trigger_low();
+#endif
+    }
+    /* Mode 18 brackets only the limb-wise write-out of each finished coordinate.
+     * The accumulation above is 39k cycles, far too long for one capture window
+     * at a useful sample rate; this copy is a few hundred cycles and carries the
+     * complete formed value, including the bits an MSB attack needs. It is also
+     * the same kind of event that leaked at line 2 -- a limb-wise memmove. */
+    for (int i = 0; i < 4; i++) {
+#if CONJ_TRIG_MODE == 18
+        trigger_high();
+#endif
+        ibz_copy(&res->v[i], &sum.v[i]);
+#if CONJ_TRIG_MODE == 18
+        trigger_low();
+#endif
+    }
+}
+
+void
+conj_run_response_formation(quat_alg_elem_t *res,
+                            const quat_lattice_t *lat,
+                            const ibz_vec_4_t *x,
+                            int radius_bound)
+{
+    uint32_t t_all = conj_cycles_read();
+    uint32_t t;
+
+#if CONJ_TRIG_MODE == 15
+    trigger_high();
+#endif
+#if CONJ_TRIG_MODE == 16
+    trigger_high();
+#endif
+    t = conj_cycles_read();
+#if CONJ_TRIG_MODE == 17 || CONJ_TRIG_MODE == 18
+    mat_4x4_eval_triggered(&res->coord, &lat->basis, x);
+#else
+    ibz_mat_4x4_eval(&res->coord, &lat->basis, x);
+#endif
+    conj_profile.eval_cycles = cycles_since(t);
+#if CONJ_TRIG_MODE == 16
+    trigger_low();
+#endif
+
+    ibz_copy(&res->denom, &lat->denom);
+
+    t = conj_cycles_read();
+    quat_alg_normalize(res);
+    conj_profile.normalize_cycles = cycles_since(t);
+
+    /* Same bound tightening the vendored routine applies on exit. */
+    ibz_set_bound(&res->denom, 3);
+    for (int i = 0; i < 4; i++) {
+        ibz_set_bound(&res->coord.v[i],
+                      (radius_bound + ibz_get_bound(&lat->basis.m[0][0])) / 2 + ibz_get_bound(&res->denom) + 3);
+    }
+#if CONJ_TRIG_MODE == 15
+    trigger_low();
+#endif
+
+    for (int i = 0; i < 4; i++) {
+        conj_profile.resp_bitlen[i] = (uint32_t)res->coord.v[i].bitlen;
+    }
+    conj_profile.formation_cycles = cycles_since(t_all);
+}
+
+#ifdef CONJ_HOST_BUILD
+/* Copy of quat_lattice_sample_from_ball (lattice.c:159) that also hands back the
+ * accepted sample vector. Everything else is byte-for-byte the vendored code --
+ * the point is to learn x, not to change what is computed. */
+int
+conj_sample_from_ball_capture(quat_alg_elem_t *res,
+                              ibz_t *res_ideal_norm,
+                              ibz_vec_4_t *x_out,
+                              const quat_lattice_t *lattice,
+                              const ibz_t *radius,
+                              prng_domain_ctx_t *prng_domain)
+{
+    ibz_vec_4_t box;
+    quat_lattice_t lat;
+    quat_lattice_init(&lat);
+    ibz_vec_4_init(&box);
+    ibz_mat_4x4_t U, G;
+    ibz_mat_4x4_init(&U);
+    ibz_mat_4x4_init(&G);
+    ibz_vec_4_t x;
+    ibz_vec_4_init(&x);
+    ibz_t rad, tmp, d2;
+    ibz_init(&rad);
+    ibz_init(&tmp);
+    ibz_init(&d2);
+    ibz_mat_4x4_copy(&lat.basis, &lattice->basis);
+    ibz_copy(&lat.denom, &lattice->denom);
+    ibz_mul(&d2, &lat.denom, &lat.denom);
+
+    quat_ideal_product_gram_matrix(&G, &lat);
+    ibz_mul_2exp(&rad, radius, 1);
+
+    int ok = quat_lattice_bound_parallelogram(&box, &U, &lat, &rad);
+    if (!ok) {
+        return ok;
+    }
+
+    do {
+        for (int i = 0; i < 4; i++) {
+            if (ibz_is_zero(&box.v[i])) {
+                ibz_copy(&x.v[i], &ibz_const_zero);
+            } else {
+                ibz_mul_2exp(&tmp, &box.v[i], 1);
+                ok &= ibz_rand_interval_with_domain(&x.v[i], &ibz_const_zero, &tmp, prng_domain);
+                ibz_sub(&x.v[i], &x.v[i], &box.v[i]);
+                ibz_set_bound(&x.v[i], ibz_get_bound(&box.v[i]));
+                if (!ok) {
+                    return ok;
+                }
+            }
+        }
+        ibz_mat_4x4_eval_t(&x, &x, &U);
+        quat_qf_eval(&tmp, &G, &x);
+    } while ((ibz_get(&tmp) % 4 == 0) || (ibz_cmp(&tmp, &rad) > 0));
+
+    if (res_ideal_norm != NULL) {
+        ibz_div_2exp(res_ideal_norm, &tmp, 1);
+    }
+    if (x_out != NULL) {
+        for (int i = 0; i < 4; i++) {
+            ibz_copy(&x_out->v[i], &x.v[i]);
+        }
+    }
+
+    conj_run_response_formation(res, &lat, &x, ibz_get_bound(radius));
+
+    if (res_ideal_norm != NULL) {
+        ibz_set_bound(res_ideal_norm, ibz_get_bound(radius));
+    }
+    return ok;
+}
+#endif /* CONJ_HOST_BUILD */
+
 /* ---------------------------------------------- Algorithm 3.18, full flow */
 
 void
