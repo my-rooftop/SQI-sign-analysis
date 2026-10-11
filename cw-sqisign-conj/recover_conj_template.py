@@ -30,8 +30,10 @@ What it measures
                  not against 50%, because individual bits of a limb are balanced
                  but finite samples are not.
 
-  budget         Bits of the 610-bit secret the measured leakage actually
-                 removes, against the ceiling perfect HW knowledge would give.
+  budget         Bits of the secret the measured leakage actually removes,
+                 against the ceiling perfect HW knowledge would give. The secret
+                 size is summed from the capture's own magnitudes: about 610 bits
+                 for alpha_sk,chl at line 2, about 746 for alpha_rsp at line 5.
 
 Usage:
   ~/.cwvenv/bin/python3 recover_conj_template.py --npz /tmp/sqisign_conj_prof.npz
@@ -193,7 +195,7 @@ def attack_limb_bits(traces, limb_vals, prof_idx, att_idx, n_poi, min_gap, hw):
 
 # -------------------------------------------------------------------- main
 
-def run(npz, n_poi, min_gap, prof_n, seed, do_bits, quiet=False):
+def run(npz, n_poi, min_gap, prof_n, seed, do_bits, quiet=False, shuffle=False):
     d = np.load(npz, allow_pickle=False)
     T = d["traces"].astype(np.float64)
     N = T.shape[0]
@@ -211,12 +213,15 @@ def run(npz, n_poi, min_gap, prof_n, seed, do_bits, quiet=False):
 
     hw_rows, bit_rows = [], []
     for c in (0, 1, 2, 3):
-        for k in range(clean_limbs(d, c, len(prof) + len(att))):
+        for k in range(clean_limbs(d, c, N)):
             key = f"c{c}_limb{k}"
             if key not in d:
                 continue
             lv = d[key].astype(np.uint32)
             hw = d[f"{key}_hw"].astype(np.int16)
+            if shuffle:
+                hw = hw[rng.permutation(N)]
+                lv = lv[rng.permutation(N)]
             r = attack_limb_hw(T, hw, prof_idx, att_idx, n_poi, min_gap)
             if r is None:
                 continue
@@ -268,21 +273,47 @@ def main():
     p.add_argument("--prof", type=int, default=None, help="profiling traces (default: 80%%)")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-bits", action="store_true")
+    p.add_argument("--no-control", action="store_true",
+                   help="skip the shuffled-label control (halves the runtime)")
     p.add_argument("--curve", default=None,
                    help="comma-separated profiling sizes for a learning curve")
-    p.add_argument("--secret-bits", type=int, default=610)
+    p.add_argument("--secret-bits", type=int, default=None,
+                   help="size of the secret; default: summed from the capture's "
+                        "own magnitudes, so line 2 and line 5 each report their own")
+    p.add_argument("--name", default=None,
+                   help="what the secret is called in the report; default: inferred "
+                        "from the trigger mode")
     args = p.parse_args()
 
     if not pathlib.Path(args.npz).exists():
         print(f"missing: {args.npz}", file=sys.stderr)
         return 1
 
-    n_total = np.load(args.npz, allow_pickle=False)["traces"].shape[0]
+    d0 = np.load(args.npz, allow_pickle=False)
+    n_total = d0["traces"].shape[0]
     prof = args.prof if args.prof else int(0.8 * n_total)
+
+    # The two targets differ in size, so read both the name and the bit count off
+    # the capture instead of carrying line 2's numbers into a line 5 report.
+    mode = int(d0["trig_mode"]) if "trig_mode" in d0 else 0
+    name = args.name or ("alpha_rsp" if mode >= 15 else "alpha_sk,chl")
+    secret_bits = args.secret_bits
+    if secret_bits is None:
+        secret_bits = 4 + sum(int(np.median(d0[f"c{c}_magnitude_bits"]))
+                              for c in range(4) if f"c{c}_magnitude_bits" in d0)
 
     hw_rows, bit_rows, np_, na_ = run(args.npz, args.n_poi, args.min_gap, prof,
                                       args.seed, not args.no_bits)
     gain = report(hw_rows, bit_rows, np_, na_)
+
+    # Picking points of interest by correlation and fitting templates to them
+    # finds structure in pure noise, so the estimate carries an upward bias.
+    # Measure it on this very capture with the labels shuffled.
+    floor = None
+    if not args.no_control:
+        ctrl, _, _, _ = run(args.npz, args.n_poi, args.min_gap, prof,
+                            args.seed + 1, False, quiet=True, shuffle=True)
+        floor = sum(max(0.0, r["h_prior"] - r["h_cond"]) for r in ctrl)
 
     # What perfect Hamming-weight knowledge would be worth, as a ceiling.
     from math import comb, log2
@@ -290,12 +321,16 @@ def main():
     pk /= pk.sum()
     h_hw = entropy_bits(pk)
     print(f"\n-- recovery budget --")
-    print(f"  secret: {args.secret_bits} bits of alpha_sk,chl across "
+    print(f"  secret: {secret_bits} bits of {name} across "
           f"{len(hw_rows)} fully-informative limbs (+ boundary limbs and 4 signs)")
     print(f"  ceiling if every limb's Hamming weight were known exactly: "
           f"{len(hw_rows)} x {h_hw:.2f} = {len(hw_rows) * h_hw:.0f} bits")
-    print(f"  measured: {gain:.0f} bits")
-    print(f"  remaining search space: about {args.secret_bits - gain:.0f} bits")
+    print(f"  measured: {gain:.1f} bits")
+    if floor is not None:
+        print(f"  shuffled-label control on the same traces: {floor:.1f} bits "
+              f"-- this is the estimator's own bias, not leakage")
+        print(f"  leakage above the control: {gain - floor:+.1f} bits")
+    print(f"  remaining search space: about {secret_bits - gain:.0f} bits")
 
     if args.curve:
         print(f"\n-- learning curve --")
