@@ -100,7 +100,7 @@ def snr_by_class(traces, labels, min_class=5):
     return signal / noise
 
 
-def classify_limb(values):
+def classify_limb(values, sign=None):
     """What kind of label a limb's observed values actually form.
 
     A limb above the value's magnitude is sign extension: it is 0x00000000 or
@@ -122,6 +122,19 @@ def classify_limb(values):
     # a handful of distinct values is a near-sign label too, not a HW label
     if distinct.size <= 3:
         return "sign"
+    # The boundary limb -- the one straddling the top of the magnitude -- is the
+    # subtle case. It holds a few real value bits under a run of sign-extension
+    # bits, so it has thousands of distinct values and slips past every test
+    # above, yet its Hamming weight is still almost entirely decided by the sign:
+    # for alpha_rsp, HW averages 5.5 when the coordinate is positive and 26.5
+    # when it is negative. Correlating against it re-finds the sign leak at
+    # |corr| ~ 0.95 and would be read as the strongest per-limb value leak in the
+    # capture, which it is not -- that one bit is already counted as the sign.
+    if sign is not None:
+        hw = np.array([int(x).bit_count() for x in v], dtype=np.float64)
+        sg = np.asarray(sign, dtype=np.float64)
+        if hw.std() > 0 and sg.std() > 0 and abs(np.corrcoef(hw, sg)[0, 1]) >= 0.9:
+            return "sign"
     return "informative"
 
 
@@ -252,9 +265,17 @@ def do_snr(path, plot_path, coords, top_n, hw_bins, min_class):
         se_key = f"c{c}_signext_limbs"
         nl = int(np.median(d[nl_key])) if nl_key in d else nlimbs
         se = int(np.median(d[se_key])) if se_key in d else 0
-        info_limbs = nl - se
-        print(f"\n  coord[{c}]: {nl} limbs negated, {se} of them pure sign extension, "
-              f"{info_limbs} informative"
+        # Count the limbs the way the ranking below does, so the header cannot
+        # disagree with the summary: the stored sign-extension count only covers
+        # the all-0x00/all-0xff limbs, and misses the boundary limb whose
+        # Hamming weight the sign still decides.
+        sgn = d[f"c{c}_sign"] if f"c{c}_sign" in d else None
+        kinds = [classify_limb(d[f"c{c}_limb{k}"].astype(np.uint32), sgn)
+                 for k in range(nl) if f"c{c}_limb{k}" in d]
+        info_limbs = sum(1 for k in kinds if k == "informative")
+        sign_limbs = sum(1 for k in kinds if k == "sign")
+        print(f"\n  coord[{c}]: {nl} limbs, {sign_limbs} decided by the sign "
+              f"({se} of them pure sign extension), {info_limbs} informative"
               + ("   (copied by ibz_copy, not negated)" if c == 0 else ""))
 
         for k in range(nl):
@@ -264,7 +285,7 @@ def do_snr(path, plot_path, coords, top_n, hw_bins, min_class):
                 continue
             hw = d[hw_key]
             lv = d[lv_key]
-            kind = classify_limb(lv)
+            kind = classify_limb(lv, d[f"c{c}_sign"] if f"c{c}_sign" in d else None)
             s = snr_by_class(traces, bin_hw(hw, hw_bins), min_class=min_class)
             if kind == "constant" or s is None:
                 print(f"    limb {k:2d}: constant across traces "
@@ -341,13 +362,24 @@ def do_snr(path, plot_path, coords, top_n, hw_bins, min_class):
         # Mangard estimate n ~ 28 / ln^2((1+r)/(1-r)) at 99.99% confidence
         rr = min(base, 0.999)
         n_needed = 28.0 / (np.log((1 + rr) / (1 - rr)) ** 2)
-        print(f"  at the median informative-limb correlation r={base:.3f}, CPA needs "
-              f"on the order of {n_needed:.0f} traces per limb")
+        print(f"  at the median informative-limb correlation r={base:.3f}, a CPA "
+              f"against a FIXED value would need about {n_needed:.0f} traces per limb")
+        # That number does not describe an attack on this target. CPA averages
+        # many traces against one fixed secret; both alpha_sk,chl and alpha_rsp
+        # are freshly sampled for every signature, so there is nothing to average
+        # over and more traces only buy a better profile. The attack that counts
+        # is profiled, with a single-trace attack phase -- see
+        # recover_conj_template.py and msb_recover_line2.py. What the correlation
+        # really says here is how well a template can be built, not how fast CPA
+        # would converge.
+        print("  note: these operands are redrawn per signature, so CPA does not "
+              "apply; the figure above is a leakage-strength yardstick only.")
         if snrs.max() >= 0.1:
-            print("  -> comfortably exploitable: CPA on the strongest limbs should "
-                  "converge in a few hundred traces")
+            print("  -> strong per-limb leakage; a profiled single-trace attack is "
+                  "worth attempting. Whether it recovers bits is a separate "
+                  "question, answered by the template and MSB experiments.")
         elif snrs.max() >= 0.01:
-            print("  -> exploitable but expect thousands of traces per limb")
+            print("  -> weak but present; expect a profiled attack to struggle")
         else:
             print("  -> below the useful range at this trace count; improve the "
                   "measurement (probe, range, averaging) before attempting recovery")
