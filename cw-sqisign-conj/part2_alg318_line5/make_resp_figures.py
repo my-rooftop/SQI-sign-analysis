@@ -6,8 +6,6 @@ Run from the package root after both captures exist:
 """
 import numpy as np, matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-# the default DejaVu Sans has no Hangul; Noto Sans CJK covers it
-matplotlib.rcParams["font.family"] = ["Noto Sans CJK JP", "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 OUT = "figures/"
 d  = np.load('/tmp/sqisign_resp.npz'); T = d['traces']
@@ -25,15 +23,19 @@ mean, std = T.mean(0), T.std(0)
 fig, ax = plt.subplots(3, 1, figsize=(13, 8))
 w = slice(0, int(spc*20))
 for i in range(4): ax[0].plot(T[i][w], lw=0.8, alpha=0.75)
-ax[0].set_title("단일 trace 4장, 처음 20 클럭 — 거의 포개진다 (정렬 양호)")
+ax[0].set_title("4 single traces, first 20 clock cycles -- they nearly "
+                "superimpose, so the traces are well aligned")
 ax[1].plot(mean[w], lw=1.1, color="#2a78d6")
 for k in range(21): ax[1].axvline(k*spc, color="#e34948", lw=0.4, alpha=0.4)
-ax[1].set_title(f"20,000장 평균, 같은 구간 — 클럭 구조 분해됨 ({spc:.1f} sample/cycle)")
+ax[1].set_title(f"Mean of 20,000, same window -- the clock structure "
+                f"resolves ({spc:.1f} samples/cycle)")
 ax[2].plot(std, lw=0.4, color="#1baf7a")
-ax[2].set_title("sample별 표준편차 (데이터 의존 변동) — 평탄하지 않고 구조가 있다")
+ax[2].set_title("Per-sample standard deviation across traces -- structured, "
+                "not flat, and the peaks are where the data shows")
 ax[2].set_xlabel("sample")
 for a in ax: a.grid(alpha=0.25)
-fig.suptitle("Alg 3.18 line 5 형성 — 신호 품질 (결정론적 성분 = 잡음 바닥의 197배)",
+fig.suptitle("Alg 3.18 line 5 formation -- signal quality "
+             "(deterministic component is 197x the noise floor)",
              fontsize=12, y=1.002)
 fig.tight_layout(); fig.savefig(OUT+"resp_signal_quality.png", dpi=130,
                                 bbox_inches="tight"); plt.close(fig)
@@ -44,16 +46,16 @@ f = np.flatnonzero(g == 1); h = len(f)//2   # same split the analyzer uses
 t_ff = welch(Tt[f[:h]], Tt[f[h:2*h]])
 fig, ax = plt.subplots(2, 1, figsize=(13, 6.5), sharex=True)
 ax[0].plot(t_fr, lw=0.5, color="#e34948")
-ax[0].set_title(f"고정 vs 랜덤  (537 / 463)   max|t| = {np.abs(t_fr).max():.2f}"
-                f"   —  {(np.abs(t_fr)>4.5).mean()*100:.1f}% 가 임계값 초과")
+ax[0].set_title(f"Fixed vs random  (537 / 463)   max|t| = {np.abs(t_fr).max():.2f}"
+                f"   --  {(np.abs(t_fr)>4.5).mean()*100:.1f}% of samples over threshold")
 ax[1].plot(t_ff, lw=0.5, color="#eda100")
-ax[1].set_title(f"대조군: 고정 vs 고정   max|t| = {np.abs(t_ff).max():.2f}  "
-                f"— 점선 안에 머물러야 한다")
+ax[1].set_title(f"Control: fixed vs fixed   max|t| = {np.abs(t_ff).max():.2f}  "
+                f"-- must stay inside the dashed lines")
 for a in ax:
     for s_ in (4.5, -4.5): a.axhline(s_, color="k", ls="--", lw=0.8)
     a.set_ylabel("t"); a.grid(alpha=0.25)
 ax[1].set_xlabel("sample")
 ax[0].set_ylim(-28, 28); ax[1].set_ylim(-28, 28)
-fig.suptitle("Alg 3.18 line 5 (α_rsp) — TVLA", fontsize=12)
+fig.suptitle("Alg 3.18 line 5 (alpha_rsp) -- TVLA", fontsize=12)
 fig.tight_layout(); fig.savefig(OUT+"response_tvla.png", dpi=130); plt.close(fig)
 print("wrote resp_signal_quality.png, response_tvla.png")

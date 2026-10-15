@@ -44,7 +44,7 @@ try:
     import torch
     import torch.nn as nn
 except ImportError:
-    print("torch가 필요합니다", file=sys.stderr)
+    print("torch is required", file=sys.stderr)
     raise
 
 
@@ -166,9 +166,9 @@ def main():
 
     print(f"\n{'=' * 78}")
     print(f"{args.npz}")
-    print(f"  {n} traces, {T.shape[1]} samples -> 학습 {len(prof)}, 검증 {len(val)}, 테스트 {len(att)}")
+    print(f"  {n} traces, {T.shape[1]} samples -> train {len(prof)}, val {len(val)}, test {len(att)}")
     print(f"  device {device}, crop +/-{args.window} samples, {args.epochs} epochs")
-    print(f"  모든 수치는 같은 split의 다수 클래스 기준선과 비교\n")
+    print(f"  every figure is against the majority-class baseline of the same split\n")
 
     c = args.coord
     targets = args.targets.split(",")
@@ -196,7 +196,7 @@ def main():
             se = np.sqrt(base * (1 - base) / len(att))
             z = (acc - base) / se
             print(f"    HW (33 classes)     acc={acc * 100:5.2f}%  base={base * 100:5.2f}%  "
-                  f"z={z:+6.1f}  {'학습됨' if z > 3 else '기준선'}  ({time.time() - t0:.0f}s)")
+                  f"z={z:+6.1f}  {'learned' if z > 3 else 'baseline'}  ({time.time() - t0:.0f}s)")
             rows.append(("hw", k, -1, acc, base, z))
 
         if "bit" in targets:
@@ -213,8 +213,8 @@ def main():
                 z = (acc - base) / se
                 zc = (ctl - base) / se
                 print(f"    bit {b:2d}   acc={acc * 100:5.2f}%  base={base * 100:5.2f}%  z={z:+6.1f}"
-                      f"   [레이블섞음 {ctl * 100:5.2f}% z={zc:+5.1f}]  "
-                      f"{'복구' if z > 3 and zc < 3 else '기준선'}")
+                      f"   [shuffled {ctl * 100:5.2f}% z={zc:+5.1f}]  "
+                      f"{'recovered' if z > 3 and zc < 3 else 'baseline'}")
                 rows.append(("bit", k, b, acc, base, z))
 
         if "byte" in targets:
@@ -226,18 +226,18 @@ def main():
             se = np.sqrt(base * (1 - base) / len(att))
             z = (acc - base) / se
             print(f"    byte 0 (256 classes) acc={acc * 100:5.2f}%  base={base * 100:5.2f}%  "
-                  f"z={z:+6.1f}  {'복구' if z > 3 else '기준선'}")
+                  f"z={z:+6.1f}  {'recovered' if z > 3 else 'baseline'}")
             rows.append(("byte", k, 0, acc, base, z))
         print()
 
-    print("  요약")
+    print("  summary")
     for kind in ("hw", "bit", "byte"):
         sel = [r for r in rows if r[0] == kind]
         if not sel:
             continue
         ok = [r for r in sel if r[5] > 3]
-        print(f"    {kind:<5} {len(ok)}/{len(sel)} 가 기준선을 유의하게 초과 "
-              f"(최대 z = {max((r[5] for r in sel), default=0):+.1f})")
+        print(f"    {kind:<5} {len(ok)}/{len(sel)} significantly above baseline "
+              f"(max z = {max((r[5] for r in sel), default=0):+.1f})")
     return 0
 
 

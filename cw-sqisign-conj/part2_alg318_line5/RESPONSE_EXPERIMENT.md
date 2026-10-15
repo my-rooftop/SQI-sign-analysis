@@ -1,177 +1,189 @@
-# Algorithm 3.18 line 5 `RandomBoundedElement` (α_rsp) 부채널 실험
+# Algorithm 3.18 line 5 `RandomBoundedElement` (α_rsp) side-channel experiment
 
-논문 5.3.2절의 미측정 항목을 채우기 위한 실험이다. 5.3.1절(line 2 `Conjugate`,
-[LINE2_EXPERIMENT.md](../part1_alg318_line2/LINE2_EXPERIMENT.md))과 **동일한 리그, 동일한 분석 파이프라인**을
-썼으므로 두 결과는 직접 비교 가능하다.
+This fills the unmeasured entry in section 5.3.2 of the paper. It uses the **same
+rig and the same analysis pipeline** as section 5.3.1 (line 2 `Conjugate`,
+[LINE2_EXPERIMENT.md](../part1_alg318_line2/LINE2_EXPERIMENT.md)), so the two
+results are directly comparable.
 
 ---
 
-## 1. 결론 요약
+## 1. Summary
 
-| 항목 | 결과 |
+| Item | Result |
 |---|---|
-| 추론 대상 | **746 bit** (크기 267+267+104+104, 부호 4) |
-| 누설 검출 (TVLA) | **검출됨**. max\|t\| = 25.62 (1,000 trace), 대조군 4.11 |
-| line 2와의 누설 강도 | **구분 불가** (동일 trace 수로 맞추면 10.49±0.84 vs 9.92) |
-| limb별 HW 상관 | 22개 유효 limb 전부 유의, \|corr\| 중앙값 0.526 (최대 0.715) |
-| **HW 정보량** | **+8.9 bit** (측정 9.4, 섞은라벨 대조군 0.4, 상한 78) |
-| **부호 복구** | **4/4 bit, 단일 trace 99.75–99.95%** (프로파일 200장이면 충분) |
-| **크기 비트길이 복구** | **불가** (z = 2.2 / −0.7 / −0.6 / −0.4, 총 0.07 bit) |
-| **MSB 복구** | **0 bit** (T = 3,4,6,8 전부 기준선과 동일) |
-| 비트 단위 LDA | 704개 중 553개가 z>3로 유의, 그러나 평균 54.3% vs 기준선 50.6% → 전체 ≈ 3.7 bit |
-| 딥러닝 (MLP) | HW 추출은 크게 향상 (16–27% → **41–48%**), 그러나 **바이트 단위는 0/3 기준선** |
+| Secret to infer | **746 bits** (magnitudes 267+267+104+104, plus 4 signs) |
+| Leakage detection (TVLA) | **detected**. max\|t\| = 25.62 (1,000 traces), control 4.11 |
+| Leakage strength vs line 2 | **indistinguishable** (10.49 ± 0.84 vs 9.92 at matched trace counts) |
+| Per-limb HW correlation | all 22 informative limbs significant, \|corr\| median 0.526 (max 0.715) |
+| **HW information** | **+8.9 bits** (9.4 measured, 0.4 shuffled-label control, ceiling 78) |
+| **Sign recovery** | **4/4 bits, 99.75–99.95% from a single trace** (200 profiling traces suffice) |
+| **Magnitude bit-length** | **not recoverable** (z = 2.2 / −0.7 / −0.6 / −0.4, 0.07 bits total) |
+| **MSB recovery** | **0 bits** (T = 3, 4, 6, 8 all at baseline) |
+| Per-bit LDA | 553 of 704 significant at z > 3, but 54.3% mean against a 50.6% baseline → ≈ 3.7 bits total |
+| Deep learning (MLP) | HW extraction improves sharply (16–27% → **41–48%**), but **byte level is 0/3, at baseline** |
 
-**결론: 5.3.1과 같다. 부호는 완전히 새고, Hamming weight도 새지만, 재구성에 필요한
-상위 비트는 나오지 않는다.** 746 bit 중 실질적으로 확보되는 것은 부호 4 bit이며,
-HW 정보 8.9 bit는 탐색 공간을 746 → 737 bit로 줄일 뿐이다.
+**Conclusion: the same as 5.3.1. The signs leak completely and the Hamming weight
+leaks too, but the high-order bits that reconstruction needs do not come out.** Of
+746 bits the attack actually secures 4 (the signs); the 8.9 bits of HW information
+only move the search space from 746 to 737 bits.
 
-이것은 음성 결과지만 측정된 음성 결과다. "측정하지 않았다"와 "측정했더니 안 나온다"는
-논문에서 다른 문장이고, 후자를 쓸 수 있게 되었다.
+This is a negative result, but a measured one. "We did not measure it" and "we
+measured it and nothing comes out" are different sentences in a paper, and the
+second one is now available.
 
 ---
 
-## 2. spec → 코드 대응
+## 2. Spec to code
 
-Alg 3.18 line 5의 `RandomBoundedElement`는 구현상
-`quat_lattice_sample_from_ball` (lattice.c:159)이다. 핵심은 기각 표본 루프 뒤의
-**형성(formation)** 세 줄이다.
+`RandomBoundedElement` at Alg 3.18 line 5 is `quat_lattice_sample_from_ball`
+(lattice.c:159) in the implementation. What matters is the **formation**, the
+three lines after the rejection loop:
 
 ```c
-ibz_mat_4x4_eval(&res->coord, &lat->basis, &x);   // coord[i] = Σ_j b[i][j]·x[j]
+ibz_mat_4x4_eval(&res->coord, &lat->basis, &x);   // coord[i] = sum_j b[i][j]*x[j]
 ibz_copy(&res->denom, &lat->denom);
-quat_alg_normalize(res);                           // gcd로 약분
+quat_alg_normalize(res);                           // divide out the gcd
 ```
 
-### 왜 전체 루틴을 재지 않는가
+### Why the whole routine is not traced
 
-두 가지 이유가 있고, 둘 다 5.3.1에서 쓴 것과 같은 방식으로 피했다.
+Two reasons, both avoided the same way section 5.3.1 avoided them.
 
-1. **비용.** 한 번 호출에 약 5.6 s. 프로파일링에 필요한 규모로 모으면 하루 반이 걸린다.
-2. **정렬.** 기각 루프가 데이터 의존적으로 반복하므로 trace 길이가 매번 다르다.
-   정렬되지 않은 trace에 TVLA나 템플릿을 적용하면 의미가 없다.
+1. **Cost.** About 5.6 s per call. Collecting enough to profile would take a day
+   and a half.
+2. **Alignment.** The rejection loop runs a data-dependent number of times, so
+   trace lengths differ. Applying TVLA or templates to unaligned traces is
+   meaningless.
 
-형성은 **수락 직후 정확히 한 번** 실행된다. 그래서 호스트가 진짜 Alg 3.18을 line 5까지
-돌려 격자와 **실제로 수락된** 표본 벡터 x를 꺼내고, 보드는 그 입력으로 형성만 재현한다.
-실행되는 코드는 어느 쪽이든 vendor된 루틴 그 자체다.
+The formation runs **exactly once, right after acceptance**. So the host runs the
+real Alg 3.18 up to line 5, keeps the lattice and the sample vector x that was
+**actually accepted**, and the board replays only the formation from that input.
+The code that executes is the vendored routine either way.
 
-> 주의: 기각 루프 자체
-> `while ((ibz_get(&tmp) % 4 == 0) || (ibz_cmp(&tmp, &rad) > 0))`
-> 는 반복 횟수가 데이터에 의존하는 **별개의 타이밍 취약점**이다. 전력 누설과는 다른
-> 축이고 이 실험의 범위 밖이다. 아직 측정하지 않았다.
+> Note: the rejection loop itself,
+> `while ((ibz_get(&tmp) % 4 == 0) || (ibz_cmp(&tmp, &rad) > 0))`,
+> runs a data-dependent number of iterations and is a **separate timing
+> vulnerability**. It is a different axis from power leakage and outside the scope
+> of this experiment. It has not been measured.
 
 ---
 
-## 3. 복구 대상 크기
+## 3. Size of the target
 
-20,000개 실제 샘플에서 측정한 분포:
+Distribution measured over 20,000 real samples:
 
-| 좌표 | 크기 (bit) | 중앙값 | 저장 limb | 순수 부호확장 limb | 유효 limb |
+| Coordinate | Magnitude (bits) | Median | Limbs stored | Pure sign-extension limbs | Informative limbs |
 |---|---|---|---|---|---|
 | coord[0] | 251–272 | 267 | 9 | 0 | 8 |
 | coord[1] | 255–272 | 267 | 9 | 0 | 8 |
 | coord[2] | 86–109 | 104 | 9 | 5 | 3 |
 | coord[3] | 91–109 | 104 | 9 | 5 | 3 |
 
-**총 746 bit** = 267+267+104+104 크기 + 부호 4.
+**746 bits total** = 267+267+104+104 of magnitude plus 4 signs.
 
-line 2의 α_sk,chl(234/234/71/71, 614 bit)보다 크고, 부호확장 limb 비율이 낮다
-(line 2는 52개 중 30개가 부호확장이었다). 즉 구조적으로는 α_rsp 쪽이 **더 유리한**
-표적인데도 결과는 같다.
+That is larger than line 2's α_sk,chl (234/234/71/71, 614 bits) and carries a lower
+fraction of sign extension (line 2 had 30 of 52 limbs as sign extension). So α_rsp
+is structurally the **more favourable** target, and the result is still the same.
 
 ---
 
-## 4. 측정 환경
+## 4. Measurement setup
 
-5.3.1과 동일. STM32F415 (CW308), ChipWhisperer-Lite, 타깃 클럭 192/26 = **7.3846 MHz**,
-PicoScope 3403D, Ch A ±100 mV / Ch B ±5 V, 4.000 ns/sample (33.9 samples/cycle),
-auto-trigger 비활성.
+Identical to 5.3.1. STM32F415 (CW308), ChipWhisperer-Lite, target clock
+192/26 = **7.3846 MHz**, PicoScope 3403D, Ch A ±100 mV / Ch B ±5 V,
+4.000 ns/sample (33.9 samples per cycle), auto-trigger disabled.
 
-### 타이밍 (보드 DWT 카운터)
+### Timing (board DWT counter)
 
-| 구간 | cycle |
+| Region | Cycles |
 |---|---|
-| 형성 전체 | 152,302 |
+| Whole formation | 152,302 |
 | `ibz_mat_4x4_eval` | 39,085 |
 | `quat_alg_normalize` | 112,539 |
 
-### 트리거 모드
+### Trigger modes
 
-| 모드 | 구간 | 결과 |
+| Mode | Region | Outcome |
 |---|---|---|
-| 15 | 형성 전체 (152,302 cycle) | 창 초과 |
-| 16 | eval만 (39,085 cycle ≈ 1.3 M sample) | 창 초과 — 상승 edge만 잡히고 하강이 없음 |
-| 17 | 좌표별 누산 | 창 초과 |
-| **18** | **좌표별 limb 단위 write-out** | **채택.** 펄스 4개, crop 후 25,491 sample |
+| 15 | whole formation (152,302 cycles) | exceeds the window |
+| 16 | eval only (39,085 cycles ≈ 1.3 M samples) | exceeds the window — rising edge captured, falling edge not |
+| 17 | per-coordinate accumulate | exceeds the window |
+| **18** | **per-coordinate limb-wise write-out** | **adopted.** 4 pulses, 25,491 samples after cropping |
 
-16번이 실패한 게 중요한 교훈이다. 39,085 cycle은 4 ns/sample에서 약 1.3 M sample인데
-스코프 창은 120,000 sample이었다. 트리거는 올라갔지만 내려오는 걸 기록에 담지 못했고,
-`no trigger pulse`로 보였다. 창 길이를 먼저 계산하지 않으면 리그 고장으로 오진하기 쉽다.
-
----
-
-## 5. 트리거 정렬 및 신호 품질
-
-20,000 trace 전부 펄스 **4개**, crop 길이 25,491–25,494 sample (±1 jitter).
-캡처 속도는 765 ms/trace로 처음부터 끝까지 변동 없음 (`ps3000aStop` 누락 버그가
-고쳐진 뒤의 정상 동작).
-
-```
-단일 trace std (sample 중앙값)  : 3.22
-20,000장 평균 trace의 std       : 4.49
-순수 잡음이라면 기대되는 값      : 0.023
-→ 결정론적 성분이 잡음 바닥의 197배
-```
-
-평균을 내도 진폭이 거의 줄지 않는다는 것은 trace가 서로 잘 정렬돼 있다는 뜻이다.
-단일 trace 4장을 겹쳐 그리면 거의 포개지고, 어긋나는 지점이 곧 데이터 의존 구간이다.
-
-![신호 품질](figures/resp_signal_quality.png)
+Mode 16's failure is the useful lesson. 39,085 cycles is about 1.3 M samples at
+4 ns/sample, while the scope window was 120,000 samples. The trigger went high but
+the record never contained it coming back down, which presented as
+`no trigger pulse`. Without computing the window length first, this is easy to
+misdiagnose as a broken rig.
 
 ---
 
-## 6. 누설 검출 — TVLA
+## 5. Trigger alignment and signal quality
 
-고정 입력 537장 vs 랜덤 463장:
+All 20,000 traces carried **4 pulses**, cropped length 25,491–25,494 samples
+(±1 jitter). Capture rate held at 765 ms/trace from first to last (normal behaviour
+once the missing `ps3000aStop` bug was fixed).
 
 ```
-fixed vs random : max|t| = 25.62 at sample 18987,  4553/25492 (17.86%) 가 4.5 초과
+single-trace std (median over samples) : 3.22
+std of the mean of 20,000 traces       : 4.49
+expected if the traces were pure noise : 0.023
+-> the deterministic component is 197x the noise floor
+```
+
+That averaging barely reduces the amplitude means the traces are well aligned
+against each other. Overlaying four single traces, they nearly superimpose, and the
+points where they diverge are exactly the data-dependent regions.
+
+![signal quality](figures/resp_signal_quality.png)
+
+---
+
+## 6. Leakage detection — TVLA
+
+537 fixed-input traces against 463 random:
+
+```
+fixed vs random : max|t| = 25.62 at sample 18987,  4553/25492 (17.86%) over 4.5
 fixed vs fixed  : max|t| =  4.11,  0 samples over threshold   OK
-→ LEAKAGE DETECTED
+-> LEAKAGE DETECTED
 ```
 
 ![TVLA](figures/response_tvla.png)
 
-t 곡선은 두 개의 넓은 누설 구간(sample ≈ 2.5k–5.7k, 10.5k–14.5k)과 그 사이의 조용한
-구간으로 나뉜다. 7절의 limb별 위치와 맞춰보면 앞 구간이 coord[0], 뒤 구간이 coord[1]이고,
-좁은 구간들이 coord[2]/[3]이다. 267 bit 좌표 둘이 104 bit 좌표 둘보다 오래 걸리므로
-구조가 일치한다.
+The t curve splits into two wide leaking regions (samples ≈ 2.5k–5.7k and
+10.5k–14.5k) with quiet stretches between them. Matching against the per-limb
+positions in section 7, the first region is coord[0] and the second coord[1], while
+the narrow spikes are coord[2] and coord[3]. The two 267-bit coordinates take longer
+than the two 104-bit ones, so the structure agrees.
 
-### line 2와의 비교 — 반드시 trace 수를 맞출 것
+### Comparing with line 2 — trace counts must be matched
 
-raw 수치만 보면 line 5(25.62)가 line 2(9.92)보다 훨씬 세 보이지만 **이는 trace 수 차이다**
-(1,000 vs 120). t는 √N에 비례한다. line 2와 같은 60+60으로 맞춰 40회 반복하면:
+On raw numbers line 5 (25.62) looks far stronger than line 2 (9.92), but **that is
+the trace-count difference** (1,000 against 120). t grows as √N. Resampled to the
+same 60+60 split line 2 used, over 40 repeats:
 
-| | max\|t\| | 4.5 초과 비율 |
+| | max\|t\| | Samples over 4.5 |
 |---|---|---|
 | line 2 (Conjugate), 60+60 | 9.92 | 7.62% |
-| line 5 (formation), 60+60, 40회 | 10.49 ± 0.84 | 7.61% ± 0.92% |
+| line 5 (formation), 60+60, 40 repeats | 10.49 ± 0.84 | 7.61% ± 0.92% |
 
-**두 표적의 누설 강도는 구분되지 않는다.** 정규화 없이 비교했다면
-"line 5가 2.5배 더 샌다"고 잘못 쓸 뻔했다.
+**The two targets cannot be distinguished by leakage strength.** Comparing without
+normalising would have produced the false claim that line 5 leaks 2.5 times as much.
 
 ---
 
-## 7. limb별 SNR / 상관
+## 7. Per-limb SNR and correlation
 
-20,000 trace, HW 라벨:
+20,000 traces, Hamming-weight labels:
 
-- 유효 limb **22개 전부** 잡음 바닥(0.032) 위에서 피크
-- \|corr(HW)\| 중앙값 **0.526**, 최대 **0.715**; SNR@poi 중앙값 **2.18**, 최대 **5.14**
-- limb이 시간축을 따라 약 4 cycle 간격으로 행진한다
+- **All 22** informative limbs peak above the 0.032 noise floor
+- \|corr(HW)\| median **0.526**, max **0.715**; SNR@POI median **2.18**, max **5.14**
+- The limbs march along the time axis about 4 cycles apart
 
-가장 센 유효 limb 5개:
+The five strongest informative limbs:
 
-| 순위 | limb | \|corr(HW)\| | SNR@poi | sample |
+| Rank | Limb | \|corr(HW)\| | SNR@POI | Sample |
 |---|---|---|---|---|
 | 1 | coord[2] limb 2 | 0.715 | 5.14 | 18,877 |
 | 2 | coord[1] limb 2 | 0.699 | 4.58 | 10,474 |
@@ -179,244 +191,263 @@ raw 수치만 보면 line 5(25.62)가 line 2(9.92)보다 훨씬 세 보이지만
 | 4 | coord[1] limb 0 | 0.661 | 3.76 | 10,160 |
 | 5 | coord[0] limb 2 | 0.644 | 3.60 | 2,084 |
 
-| 좌표 | limb 0 위치 | 마지막 유효 limb 위치 |
+| Coordinate | Position of limb 0 | Position of last informative limb |
 |---|---|---|
 | coord[0] | sample 1,758 | 2,847 |
 | coord[1] | 10,160 | 11,243 |
 | coord[2] | 18,556 | 18,877 |
 | coord[3] | 23,155 | 23,481 |
 
-![limb별 SNR](figures/response_snr.png)
+![per-limb SNR](figures/response_snr.png)
 
-### 함정: 경계 limb은 부호가 변장한 것이다
+### Trap: the boundary limb is the sign in disguise
 
-처음 돌렸을 때 coord[0]/[1]의 limb 8과 coord[2]/[3]의 limb 3이 \|corr\| = 0.95로
-압도적 1위였다. 값 누설처럼 보이지만 아니다.
+On the first run, limb 8 of coord[0]/[1] and limb 3 of coord[2]/[3] topped the
+ranking at \|corr\| = 0.95. That looks like a value leak. It is not.
 
-| limb | corr(HW, 부호) | HW\|양수 | HW\|음수 | corr(HW, 비트길이) | distinct |
+| Limb | corr(HW, sign) | HW given positive | HW given negative | corr(HW, bit-length) | distinct |
 |---|---|---|---|---|---|
-| c0 limb 2 (정상) | 0.012 | 16.0 | 16.0 | 0.001 | 20000 |
+| c0 limb 2 (normal) | 0.012 | 16.0 | 16.0 | 0.001 | 20000 |
 | **c0 limb 8** | **0.986** | **5.5** | **26.5** | −0.003 | 8239 |
 | **c2 limb 3** | **0.992** | **4.2** | **27.8** | — | 2270 |
 
-경계 limb은 크기의 꼭대기를 걸치고 있어서 실제 값 비트 몇 개 위에 부호확장 비트가
-쌓인다. distinct 값이 수천 개라 기존 분류기(`distinct <= 3`이면 부호)를 통과했지만,
-Hamming weight는 사실상 **부호 하나로 결정된다**. 여기에 상관을 걸면 이미 따로 세고 있는
-부호 누설을 \|corr\| ≈ 0.95로 다시 발견할 뿐이다.
+The boundary limb straddles the top of the magnitude, so a few real value bits sit
+under a run of sign-extension bits. It has thousands of distinct values and so
+passed the old classifier (`distinct <= 3` means sign), yet its Hamming weight is
+**decided almost entirely by the sign**. Correlating against it simply rediscovers,
+at \|corr\| ≈ 0.95, the sign leak that is already counted separately.
 
-`classify_limb()`이 이제 부호 라벨을 받아 corr(HW, 부호) ≥ 0.9인 limb을 걸러낸다.
-템플릿 쪽은 애초에 `크기 // 32`로 완전 유효 limb만 썼기 때문에 8.9 bit 수치는 영향 없다.
+`classify_limb()` now takes the sign label and rejects any limb with
+corr(HW, sign) ≥ 0.9. The template side already used only the fully informative
+limbs (`magnitude // 32`), so the 8.9-bit figure is unaffected.
 
-이 함정은 5.3.1에서 기록한 "부호확장 limb이 32비트 누설로 위장하는" 문제와 같은 것이
-더 미묘한 형태로 나타난 것이다.
+This is the same trap recorded in 5.3.1 — "sign-extension limbs masquerading as
+32-bit leakage" — appearing in a subtler form.
 
 ---
 
-## 8. 복구 시도
+## 8. Recovery attempts
 
-### 8.1 왜 CPA가 아니라 템플릿인가
+### 8.1 Why a template attack and not CPA
 
-α_rsp는 **서명마다 새로 뽑힌다**. 고정된 비밀이 없으므로 평균 낼 대상이 없고, trace를
-더 모아봐야 프로파일만 좋아진다. 공격은 프로파일링 + **단일 trace** 공격 단계여야 한다.
+α_rsp is **redrawn for every signature**. There is no fixed secret to average over,
+so more traces only buy a better profile. The attack has to be profiled, with a
+**single-trace** attack phase.
 
-SNR 스크립트가 출력하던 "median r = 0.57이면 CPA가 16장이면 수렴" 문구는 이 표적에
-적용되지 않는다. 오해를 부를 수 있어 스크립트 문구를 고쳤다 — 그 숫자는 누설 강도의
-척도일 뿐 공격 비용이 아니다.
+The SNR script used to print "at median r = 0.57, CPA converges in 16 traces". That
+does not apply to this target. The wording was corrected because it invites the
+wrong reading — that number is a yardstick for leakage strength, not an attack cost.
 
-여기서의 프로파일링은 같은 보드에서 정답을 알고 하는 것이므로, 아래 수치는 모두
-**공격자가 얻을 수 있는 상한**이다.
+Profiling here is done on the same board with ground truth known, so every figure
+below is an **upper bound on what an attacker could achieve**.
 
-### 8.2 무엇이 새고 무엇이 안 새는가
+### 8.2 What leaks and what does not
 
-**부호 — 완전히 샌다.**
+**Signs — they leak completely.**
 
-| 좌표 | 단일 trace 정확도 | 기준선 | z |
+| Coordinate | Single-trace accuracy | Baseline | z |
 |---|---|---|---|
 | coord[0] | 99.75% | 50.1% | 62.8 |
 | coord[1] | 99.95% | 50.3% | 62.7 |
 | coord[2] | 99.95% | 50.1% | 63.1 |
 | coord[3] | 99.88% | 50.0% | 63.0 |
 
-프로파일 200장이면 100%에 도달한다. 4 bit 확보.
+200 profiling traces already reach 100%. 4 bits secured.
 
-**Hamming weight — 샌다, 그러나 적게.**
+**Hamming weight — it leaks, but not much.**
 
 ```
-상한 (모든 limb의 HW를 정확히 안다면) : 22 × 3.55 = 78 bit
-측정                                  :  9.4 bit
-섞은 라벨 대조군 (같은 trace)          :  0.4 bit
-실제 누설                             : +8.9 bit
+ceiling, if every limb's HW were known exactly : 22 x 3.55 = 78 bits
+measured                                        :  9.4 bits
+shuffled-label control (same traces)            :  0.4 bits
+actual leakage                                  : +8.9 bits
 ```
 
-limb별 HW 적중률은 16–27%(무작위 ≈ 5%, 21개 클래스)로 분명히 유의하지만, 정보량으로는
-limb당 0.24–0.79 bit에 그친다.
+Per-limb HW exact-match runs 16–27% against roughly 5% by chance (21 classes), which
+is clearly significant, but as information it is only 0.24–0.79 bits per limb.
 
-> 섞은 라벨 대조군을 넣은 이유: POI를 상관으로 고르고 **같은 지점에** 템플릿을 맞추면
-> 잡음에서도 정보가 나온다. 합성 잡음 trace 1,200장에서 이 파이프라인은 5 bit를
-> 보고했다. 20,000장에서는 이 편향이 0.4 bit로 줄지만, 수치를 인용하려면 대조군이
-> 같이 있어야 한다. (line 2 수치도 재검증했다: 10.2 측정 − 0.3 대조군 = **+9.9 bit**.)
+> Why the shuffled-label control is there: selecting points of interest by
+> correlation and then fitting templates **at those same points** extracts
+> information even from noise. On 1,200 synthetic noise traces this pipeline
+> reported 5 bits. At 20,000 traces the bias falls to 0.4 bits, but a quoted figure
+> needs the control beside it. (The line 2 figure was rechecked as well:
+> 10.2 measured − 0.3 control = **+9.9 bits**.)
 
-**크기의 비트길이 — 안 샌다.**
+**Magnitude bit-length — it does not leak.**
 
-| 좌표 | 적중률 | 기준선 | z | 정보량 |
+| Coordinate | Accuracy | Baseline | z | Information |
 |---|---|---|---|---|
-| coord[0] | 24.6% | 23.2% | 2.2 | 0.02 bit |
-| coord[1] | 22.9% | 23.4% | −0.7 | 0.02 bit |
-| coord[2] | 22.9% | 23.3% | −0.6 | 0.02 bit |
-| coord[3] | 23.0% | 23.2% | −0.4 | 0.02 bit |
+| coord[0] | 24.6% | 23.2% | 2.2 | 0.02 bits |
+| coord[1] | 22.9% | 23.4% | −0.7 | 0.02 bits |
+| coord[2] | 22.9% | 23.3% | −0.6 | 0.02 bits |
+| coord[3] | 23.0% | 23.2% | −0.4 | 0.02 bits |
 
-총 0.07 bit. 이것이 5.3.1과 똑같은 첫 번째 장벽이다. **MSB가 어디 있는지 모르면
-HW를 알아도 재구성에 쓸 수 없다.**
+0.07 bits in total. This is the same first barrier as in 5.3.1. **Without knowing
+where the MSB sits, knowing the Hamming weight is useless for reconstruction.**
 
-### 8.3 MSB 복구 실패
+### 8.3 MSB recovery fails
 
-접두 T bit를 단일 trace로 분류:
+Classifying the leading T bits from a single trace:
 
-| T | 클래스 | 적중률 | 기준선 | 판정 |
+| T | Classes | Accuracy | Baseline | Verdict |
 |---|---|---|---|---|
-| 3 | 2 | 98.6% | 98.6% | 기준선 수준 |
-| 4 | 4 | 89.5% | 89.5% | 기준선 수준 |
-| 6 | 12 | 44.7% | 44.7% | 기준선 수준 |
-| 8 | 35 | 14.5% | 14.6% | 기준선 수준 |
+| 3 | 2 | 98.6% | 98.6% | at baseline |
+| 4 | 4 | 89.5% | 89.5% | at baseline |
+| 6 | 12 | 44.7% | 44.7% | at baseline |
+| 8 | 35 | 14.5% | 14.6% | at baseline |
 
-(coord[0] 기준, 나머지 좌표도 동일한 양상)
+(coord[0]; the other coordinates behave identically)
 
-**네 좌표 모두 0 bit.** 적중률이 기준선과 소수점까지 같다 — 템플릿이 추측보다 나은 게
-전혀 없다는 뜻이다.
+**0 bits on all four coordinates.** Accuracy matches the baseline to the decimal,
+meaning the template does nothing better than guessing.
 
-T=3에서 98.6%가 높아 보이지만 그건 기준선이다. 크기가 272 bit 창 안에서 ~267 bit이므로
-상위 비트는 거의 항상 0이고, 아무것도 안 해도 98.6%가 나온다.
+98.6% at T = 3 looks high, but that is the baseline. The magnitude is about 267 bits
+inside a 272-bit window, so the top bits are nearly always zero and 98.6% comes for
+free.
 
-### 8.4 비트 수준 누설 — 존재하지만 무의미
+### 8.4 Bit-level leakage — present but meaningless
 
-704개 비트 위치에 LDA:
+LDA at 704 bit positions:
 
 ```
-평균 정확도  54.3%   (최대 61.9%)
-다수 클래스 기준선  50.6%
-z > 3으로 기준선을 넘는 비트: 704개 중 553개
+mean accuracy        54.3%   (max 61.9%)
+majority baseline    50.6%
+bits beating baseline at z > 3: 553 of 704
 ```
 
-553/704가 "유의"하지만, 54.3%는 비트당 1 − H(0.543) ≈ **0.005 bit**다. 704개를 다
-합쳐도 약 3.7 bit. **유의성과 유용성은 다르다**는 점이 이 표의 요지다.
+553/704 are "significant", yet 54.3% is 1 − H(0.543) ≈ **0.005 bits** per bit. Summed
+over all 704 that is about 3.7 bits. The point of this table is that **significance
+and usefulness are different things**.
 
-(5.3.1에서 같은 실수를 했다. 200장짜리 검정력 없는 실험으로 "0/576 비트가 샌다"고 썼다가,
-20,000장에서 481/576이 유의하게 나왔다. 올바른 표현은 "불가능"이 아니라
-"존재하지만 무시할 만하다"이다.)
+(The same mistake was made in 5.3.1. An underpowered 200-trace run produced the
+claim "0 of 576 bits leak"; at 20,000 traces 481 of 576 were significant. The correct
+phrasing is not "impossible" but "present and negligible".)
 
-### 8.5 딥러닝 공격
+### 8.5 Deep-learning attack
 
-MLP, POI 주변 ±1000 sample(2000 차원) 크롭, 학습 14,000 / 검증 2,000 / 테스트 4,000,
-60 epoch. coord[1]의 limb 0–2에 적용했다. 모든 수치는 같은 split의 다수 클래스
-기준선과 비교하며, **레이블을 섞은 대조군**을 함께 돌렸다.
+MLP, ±1000 samples cropped around the POI (2000 dimensions), 14,000 train / 2,000
+validation / 4,000 test, 60 epochs, applied to limbs 0–2 of coord[1]. Every figure is
+against the majority-class baseline of the same split, and a **shuffled-label
+control** was run alongside.
 
-| 대상 | limb 0 | limb 1 | limb 2 | 기준선 | 판정 |
+| Target | limb 0 | limb 1 | limb 2 | Baseline | Verdict |
 |---|---|---|---|---|---|
-| HW (33 클래스) | **48.03%** | **41.23%** | **47.75%** | ≈13.7% | z = +50 ~ +64, 학습됨 |
-| bit 0 | 59.38% | 57.70% | 59.00% | ≈50% | 복구 (z +8.7 ~ +11.4) |
-| bit 15 | 54.30% | 53.62% | 54.87% | ≈50% | 복구 (z +3.7 ~ +5.3) |
-| bit 31 | 52.72% | 51.75% | 51.97% | ≈50% | 2/3만 유의 |
-| **byte 0 (256 클래스)** | **0.85%** | **0.58%** | **0.45%** | **≈0.71%** | **0/3, 기준선** |
+| HW (33 classes) | **48.03%** | **41.23%** | **47.75%** | ≈13.7% | z = +50 to +64, learned |
+| bit 0 | 59.38% | 57.70% | 59.00% | ≈50% | recovered (z +8.7 to +11.4) |
+| bit 15 | 54.30% | 53.62% | 54.87% | ≈50% | recovered (z +3.7 to +5.3) |
+| bit 31 | 52.72% | 51.75% | 51.97% | ≈50% | only 2/3 significant |
+| **byte 0 (256 classes)** | **0.85%** | **0.58%** | **0.45%** | **≈0.71%** | **0/3, at baseline** |
 
-요약: HW 3/3 유의(최대 z = +64.0), 비트 13/15 유의(최대 z = +11.5),
-**바이트 0/3 유의(최대 z = +1.1)**.
+Summary: HW 3/3 significant (max z = +64.0), bits 13/15 significant (max z = +11.5),
+**bytes 0/3 significant (max z = +1.1)**.
 
-섞은 레이블 대조군은 전부 z ≈ ±2 안에 머물렀다. 즉 위의 유의성은 진짜다.
+The shuffled-label controls all stayed within z ≈ ±2, so the significance above is
+real.
 
-**읽는 법이 중요하다.** 딥러닝은 Hamming weight 추출을 크게 끌어올린다 —
-템플릿의 16–27%에서 41–48%로 올라갔다. 그런데도 결론은 바뀌지 않는다.
+**How to read this matters.** Deep learning lifts Hamming-weight extraction
+substantially — from the templates' 16–27% to 41–48%. The conclusion still does not
+change.
 
-- 비트 하나당 59%는 1 − H(0.59) ≈ **0.024 bit**다. 템플릿(54.3%, 0.005 bit)보다 5배지만
-  여전히 비트 하나를 '아는' 것과는 거리가 멀다.
-- **바이트 단위(256 클래스)가 기준선이라는 것이 결정적이다.** 한 바이트를 맞히려면
-  같은 HW 클래스 **안에서** 값을 갈라야 한다. HW는 잘 배우면서 바이트는 전혀 못 배운다는
-  것은, 신경망이 찾아낸 것이 결국 **HW(와 그 부산물)뿐**이라는 뜻이다.
+- 59% on a single bit is 1 − H(0.59) ≈ **0.024 bits**. Five times the templates'
+  0.005, and still far from knowing that bit.
+- **The decisive point is that the byte level (256 classes) sits at baseline.**
+  Naming a byte requires separating values **inside** one HW class. A network that
+  learns the weight well and the byte not at all has found **the weight and its
+  by-products, and nothing else**.
 
-5.3.1에서 나는 정확도(54–58%)만 보고 "딥러닝이 비트를 뽑아냅니다"라고 썼다가
-정보량으로 환산해 뒤집었다. 같은 함정이 여기서도 유효하다. **정확도가 기준선을 넘는 것과
-비트를 복구하는 것은 다르다.**
-
----
-
-## 9. 왜 MSB가 안 나오는가
-
-두 가지 장벽이 겹쳐 있고, 5.3.1과 동일하다.
-
-1. **MSB 위치를 모른다.** 크기의 비트길이가 복구되지 않으므로(0.07 bit) HW를 알아도
-   그 비트들이 어디에 놓이는지 알 수 없다.
-2. **HW는 비트에 대해 대칭이다.** Hamming weight는 어떤 비트가 1인지 구분하지 않는다.
-   HW를 완벽히 알아도 한 limb당 log2 C(32,h) 만큼의 모호성이 남는다. 이걸 깨려면 HW
-   클래스 **안에서** 값을 가르는 누설이 필요한데, 8.4의 측정이 그 크기가 비트당
-   0.005 bit(딥러닝으로도 0.024 bit)임을 보여준다.
-
-   8.5의 바이트 실험이 이 장벽을 가장 직접적으로 보여준다. 같은 신경망이 HW는
-   기준선의 3.5배로 배우면서(13.7% → 48%) 바이트는 전혀 못 배운다(0.71% → 0.63%).
-   추출 가능한 것이 **HW와 그 부산물로 국한된다**는 뜻이고, 그것이 곧 상한이다.
-
-α_rsp는 `quat_alg_normalize`에서 gcd로 약분된다. 형성 시점에 새던 것이 최종 저장값에서는
-사라질 수 있다는 가능성을 실험 전에 명시했는데, 결과는 그 시나리오와 일관된다.
+In 5.3.1 the accuracy alone (54–58%) led to the claim "deep learning extracts bits",
+which converting to information overturned. The same trap applies here. **Beating a
+baseline and recovering a bit are not the same thing.**
 
 ---
 
-## 10. 5.3.1과의 비교
+## 9. Why the MSBs do not come out
+
+Two barriers overlap, the same pair as in 5.3.1.
+
+1. **The MSB position is unknown.** The magnitude bit-length is not recoverable
+   (0.07 bits), so even a correct Hamming weight leaves it unclear where those bits
+   sit.
+2. **Hamming weight is symmetric in the bits.** It does not distinguish which bits
+   are 1. Even with the weight known exactly, log2 C(32,h) of ambiguity remains per
+   limb. Breaking that needs leakage that separates values **inside** an HW class,
+   and section 8.4 measures that at 0.005 bits per bit (0.024 even with deep
+   learning).
+
+   The byte experiment in 8.5 shows this barrier most directly. The same network
+   learns the weight at 3.5 times baseline (13.7% → 48%) and learns the byte not at
+   all (0.71% → 0.63%). What is extractable is **confined to the Hamming weight and
+   its by-products**, and that is the ceiling.
+
+α_rsp passes through `quat_alg_normalize`, which divides out a gcd. The possibility
+that something leaking at formation time disappears in the stored value was stated
+before the experiment, and the result is consistent with that scenario.
+
+---
+
+## 10. Comparison with 5.3.1
 
 | | 5.3.1 line 2 (α_sk,chl) | 5.3.2 line 5 (α_rsp) |
 |---|---|---|
-| 추론 대상 | 614 bit | 746 bit |
-| 연산 | 제자리 부정 (`Conjugate`) | 곱셈-누산 형성 |
-| 유효 limb | 18 | 22 |
-| TVLA (60+60 기준) | max\|t\| 9.92 | 10.49 ± 0.84 |
-| HW 정보량 (대조군 차감) | +9.9 bit | +8.9 bit |
-| 부호 | 4/4 bit | 4/4 bit |
-| 비트길이 | 복구 불가 | 복구 불가 |
-| **MSB** | **0 bit** | **0 bit** |
+| Secret to infer | 614 bits | 746 bits |
+| Operation | in-place negation (`Conjugate`) | multiply-accumulate formation |
+| Informative limbs | 18 | 22 |
+| TVLA (at matched 60+60) | max\|t\| 9.92 | 10.49 ± 0.84 |
+| HW information (control subtracted) | +9.9 bits | +8.9 bits |
+| Signs | 4/4 bits | 4/4 bits |
+| Bit-length | not recoverable | not recoverable |
+| **MSBs** | **0 bits** | **0 bits** |
 
-구조가 다르고(제자리 부정 vs 곱셈-누산), 크기가 다르고, 부호확장 비율이 다른데도
-결론이 같다. 이는 이 장벽이 특정 연산의 성질이 아니라 **HW 누설 모델 자체의 한계**임을
-시사한다.
+Different structure (in-place negation against multiply-accumulate), different size,
+different sign-extension fraction — and the same conclusion. That suggests the
+barrier is not a property of one particular operation but **a limit of the
+Hamming-weight leakage model itself**.
 
 ---
 
-## 11. 재현 방법
+## 11. Reproducing
 
 ```bash
-# 0. 호스트 도구 빌드
+# 0. build the host tool
 make -C ../host
 
-# 1. 실제 Alg 3.18을 line 5까지 돌려 (격자, 수락된 x, 반지름, α_rsp) 생성
-../host/conj_vector_host responses 20000 run1 > /tmp/responses.txt   # 약 72초
+# 1. run the real Alg 3.18 up to line 5 and emit (lattice, accepted x, radius, alpha_rsp)
+../host/conj_vector_host responses 20000 run1 > /tmp/responses.txt   # about 72 s
 
-# 2. 펌웨어 — CONJ_TRIG_MODE=18
+# 2. firmware -- CONJ_TRIG_MODE=18
 make -C .. CONJ_TRIG_MODE=18
 
-# 3. 랜덤 캠페인 (765 ms/trace, 20,000장 ≈ 4.2시간)
+# 3. random campaign (765 ms/trace, 20,000 traces ~ 4.2 hours)
 ~/.cwvenv/bin/python3 capture_resp_pico.py --records /tmp/responses.txt \
     -n 20000 --samples 120000 --out /tmp/sqisign_resp.npz
 
-# 4. TVLA용 고정-vs-랜덤 (1,000장 ≈ 13분)
+# 4. fixed-versus-random set for TVLA (1,000 traces ~ 13 min)
 ~/.cwvenv/bin/python3 capture_resp_pico.py --records /tmp/responses.txt \
     --mode tvla -n 1000 --samples 120000 --out /tmp/sqisign_resp_tvla.npz
 
-# 5. 분석 전체 (TVLA, SNR, 템플릿+대조군, MSB, 딥러닝)
+# 5. the whole analysis (TVLA, SNR, templates + control, MSB, deep learning)
 TVLA_NPZ=/tmp/sqisign_resp_tvla.npz ./run_resp_analysis.sh \
     /tmp/sqisign_resp.npz /tmp/resp_analysis
 ```
 
-캡처 전에 합성 데이터로 분석 체인을 먼저 돌려보는 것을 권한다. 그렇게 해서 이번에
-`NameError` 하나와 위의 5 bit 편향 문제를 4시간을 쓰기 전에 잡았다.
+Running the analysis chain on synthetic data before capturing is worth the few
+minutes. Doing that here caught a `NameError` and the 5-bit bias described above
+before four hours of capture were spent.
 
 ---
 
-## 12. 결론
+## 12. Conclusion
 
-Algorithm 3.18 line 5의 응답 사원수 형성은 **측정 가능하고, 실제로 샌다**.
-TVLA는 결정적으로 검출하고(max\|t\| 25.62 대 임계값 4.5), 22개 유효 limb 전부에서
-Hamming weight 상관이 잡음 바닥 위에 있다.
+The response-quaternion formation at Algorithm 3.18 line 5 is **measurable and does
+leak**. TVLA detects it decisively (max\|t\| 25.62 against a threshold of 4.5), and
+Hamming-weight correlation sits above the noise floor on all 22 informative limbs.
 
-그러나 논문 4장의 재구성 알고리즘이 요구하는 **상위 비트는 나오지 않는다**.
-746 bit 중 확보되는 것은 부호 4 bit이고, HW 정보 8.9 bit는 탐색 공간을 737 bit로
-줄일 뿐이다. 비트길이가 복구되지 않아 MSB의 위치를 모르고, HW는 비트에 대해 대칭이라
-클래스 안을 가르지 못한다.
+But the **high-order bits that the reconstruction algorithm of chapter 4 requires do
+not come out**. Of 746 bits the attack secures the 4 signs, and 8.9 bits of HW
+information only reduce the search space to 737 bits. The bit-length is not
+recoverable so the MSB position is unknown, and Hamming weight is symmetric in the
+bits so it cannot separate values inside a class.
 
-5.3.1과 5.3.2가 서로 다른 연산 구조에서 같은 결론에 도달했다는 점이, 이 결과가
-구현 세부사항이 아니라 누설 모델의 한계에서 온다는 근거가 된다.
+That 5.3.1 and 5.3.2 reach the same conclusion from different operation structures is
+the evidence that this result comes from a limit of the leakage model rather than
+from an implementation detail.

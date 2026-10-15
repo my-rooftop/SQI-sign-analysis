@@ -111,7 +111,7 @@ def run_coord(T_all, values, mags, c, widths, n_poi, min_gap, prof_frac, min_cla
     print(f"\n  coord[{c}]: magnitude {int(mags.min())}-{L} bits, "
           f"window L={L}, profiling {len(prof)}, attack {len(att)}")
     print(f"    {'T':>3}{'classes':>9}{'exact':>9}{'baseline':>10}{'top-2':>8}"
-          f"{'top-8':>8}{'rank':>8}   판정")
+          f"{'top-8':>8}{'rank':>8}{'verdict':>12}")
 
     rows = []
     for T in widths:
@@ -130,7 +130,7 @@ def run_coord(T_all, values, mags, c, widths, n_poi, min_gap, prof_frac, min_cla
 
         classes = np.array([c_ for c_ in np.unique(yp) if (yp == c_).sum() >= min_class])
         if classes.size < 2:
-            print(f"    {T:>3}{'-':>9}  클래스가 부족해 측정 불가")
+            print(f"    {T:>3}{'-':>9}  too few classes to measure")
             continue
         keep = np.isin(yp, classes)
         means, prec, counts = fit_templates(Xp[keep], yp[keep], classes)
@@ -151,7 +151,7 @@ def run_coord(T_all, values, mags, c, widths, n_poi, min_gap, prof_frac, min_cla
 
         vals, cnts = np.unique(ya, return_counts=True)
         base = float(cnts.max() / cnts.sum())
-        verdict = "복구" if exact > base + 3 * np.sqrt(base * (1 - base) / len(ya)) else "기준선 수준"
+        verdict = "recovered" if exact > base + 3 * np.sqrt(base * (1 - base) / len(ya)) else "at baseline"
 
         print(f"    {T:>3}{classes.size:>9}{exact * 100:>8.1f}%{base * 100:>9.1f}%"
               f"{top2 * 100:>7.1f}%{top8 * 100:>7.1f}%{np.mean(ranks):>8.1f}   {verdict}")
@@ -200,7 +200,7 @@ def main():
                           args.prof_frac, args.min_class, args.seed)
 
     if rows:
-        print(f"\n  요약: 좌표별로 '복구' 판정이 난 최대 T")
+        print(f"\n  summary: largest T judged recovered, per coordinate")
         for c in sorted({r["coord"] for r in rows}):
             ok = [r["T"] for r in rows if r["coord"] == c
                   and r["exact"] > r["base"] + 3 * np.sqrt(r["base"] * (1 - r["base"]) / max(n // 5, 1))]

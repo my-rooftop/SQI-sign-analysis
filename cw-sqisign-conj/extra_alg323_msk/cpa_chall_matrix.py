@@ -251,20 +251,20 @@ def main():
             "m00": (mul[1][1], mul[2][0]),       # add matvec0 += m01*achl
             "m10": (mul[3][1], S),               # add matvec1 += m11*achl
         }
-        src = "펄스 실측"
+        src = "measured from the trigger pulses"
     else:
         cyc = S / 5894.0
         windows = {"m01": (int(1153 * cyc), int(2713 * cyc)),
                    "m11": (int(4114 * cyc), int(5647 * cyc)),
                    "m00": (int(2713 * cyc), int(2961 * cyc)),
                    "m10": (int(5647 * cyc), S)}
-        src = "사이클 추정"
-    print(f"  연산 구간 ({src}): " + ", ".join(f"{k}={v}" for k, v in windows.items()))
+        src = "estimated from cycle counts"
+    print(f"  operation windows ({src}): " + ", ".join(f"{k}={v}" for k, v in windows.items()))
     bad = [k for k, (a, b_) in windows.items() if b_ - a < 100]
     if bad:
-        print(f"  경고: 창이 너무 좁음 {bad}")
-    print(f"  공개값 HW 투영 제거: 켜짐\n")
-    PROJ = public_projector(b)  # 공개값 HW 투영 (곱 결과 P 와 이름 분리)
+        print(f"  warning: windows too narrow {bad}")
+    print(f"  public-value HW projection removed: on\n")
+    PROJ = public_projector(b)  # projector for the public value (named apart from the product P)
 
     for mul_idx, add_idx, mul_name, add_name in ((1, 0, "m01", "m00"), (3, 2, "m11", "m10")):
         # --- the entry that multiplies achl ---
@@ -321,7 +321,7 @@ def main():
         val = "".join(f"{v:08x}" for v in reversed(ls)) if ls else "-"
         print(f"  {nm:<6}{ok:>5}/{args.limbs}{bits:>8}   0x{val}")
     print("  " + "-" * 70)
-    print(f"  전체: {total_bits}/512 bit 복구")
+    print(f"  total: {total_bits}/512 bits recovered")
     return 0
 
 
