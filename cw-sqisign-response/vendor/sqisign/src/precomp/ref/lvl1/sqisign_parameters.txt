@@ -1,3 +1,0 @@
-lvl = 1
-p = 0x4ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
-num_orders = 7

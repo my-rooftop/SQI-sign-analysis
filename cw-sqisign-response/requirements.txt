@@ -1,2 +1,0 @@
-chipwhisperer==6.0.0
-numpy==1.26.4

@@ -1,4 +1,29 @@
-# SQIsign Algorithm 3.18 line 2 — `Conjugate(α_sk,chl)` 부채널 실험
+# SQIsign Algorithm 3.18 부채널 실험 (Round 3)
+
+upstream `the-sqisign.git` **f417ebd** / 2026-09-01 spec(`sqisign-20260901.pdf`),
+파라미터셋 `p324_3`, STM32F415 (CW308) + PicoScope 3403D.
+
+Algorithm 3.18 `SampleQuaternionResponse` 안의 **서로 다른 두 연산**을 측정했다.
+알고리즘 두 개가 아니라 같은 알고리즘의 두 줄이다.
+
+| 파트 | 논문 | 대상 | 결과 |
+|---|---|---|---|
+| [`part1_alg318_line2/`](part1_alg318_line2/LINE2_EXPERIMENT.md) | **5.3.1** | line 2 `Conjugate(α_sk,chl)` | 614 bit 중 부호 4 bit, MSB 0 bit |
+| [`part2_alg318_line5/`](part2_alg318_line5/RESPONSE_EXPERIMENT.md) | **5.3.2** | line 5 `RandomBoundedElement` (α_rsp) | 746 bit 중 부호 4 bit, MSB 0 bit |
+
+[`extra_alg323_msk/`](extra_alg323_msk/)는 **Algorithm 3.23 `Sign` line 12**의 `Msk`를
+노린 별개 작업이다. `Msk`는 고정 비밀이라 CPA가 먹히지만(`Msk[0][1]` 128/128 bit,
+2,000 trace 비프로파일), 전체 행렬은 320/512이고 재현성이 3회 중 2회라 **미완**이다.
+논문 5.3절에는 들어가지 않는다.
+
+펌웨어는 **단일 바이너리**이고 빌드 시 `CONJ_TRIG_MODE`로 대상을 고른다. 그래서 C 코드와
+리그·분석기는 두 파트가 공유하며 최상위와 `common/`에 둔다.
+
+---
+
+## 아래 내용은 part 1 (line 2) 기준이다
+
+line 5(5.3.2)의 측정·분석은 [`part2_alg318_line5/RESPONSE_EXPERIMENT.md`](part2_alg318_line5/RESPONSE_EXPERIMENT.md)를 보라.
 
 2026-09-01 spec(`sqisign-20260901.pdf`)의 **Algorithm 3.18 SampleQuaternionResponse, line 2**를
 타겟으로 하는 측정 패키지다.
@@ -97,10 +122,31 @@ cw_randombytes.c             보드 RNG shim
 host/conj_vector_host.c      벡터 생성 + KAT + ground truth 출력 (PC)
 build_host_tool.sh           호스트 도구 빌드
 Makefile                     펌웨어 빌드
-conj_rig.py                  PicoScope 3403D + CW-Lite 공용 리그
-check_trigger.py             (3) 트리거 정렬 검증
-capture_conj_pico.py         (2) 캡처 — random / fixed / tvla
-analyze_conj_leakage.py      (4) TVLA + SNR + correlation
+
+common/                      두 파트 공유 파이썬
+  conj_rig.py                PicoScope 3403D + CW-Lite 공용 리그
+  check_trigger.py           트리거 정렬 검증
+  analyze_conj_leakage.py    TVLA + SNR + correlation
+  recover_conj_template.py   프로파일드 템플릿 + 비트별 LDA + 섞은라벨 대조군
+  msb_recover.py             상위 T비트 복구 측정
+  dl_recover.py              딥러닝 복구 (MLP)
+
+part1_alg318_line2/          5.3.1 — line 2 Conjugate
+  LINE2_EXPERIMENT.md        실험 보고서
+  capture_conj_pico.py       캡처 — random / fixed / tvla
+  capture_line2_pico.py      고속 주입 경로 캡처
+  figures/                   그림 9장
+
+part2_alg318_line5/          5.3.2 — line 5 RandomBoundedElement
+  RESPONSE_EXPERIMENT.md     실험 보고서
+  capture_resp_pico.py       캡처 — random / tvla
+  run_resp_analysis.sh       분석 5단계 일괄 실행
+  make_resp_figures.py       그림 생성
+  figures/                   그림 3장
+
+extra_alg323_msk/            Alg 3.23 line 12 Msk (5.3절 범위 밖, 미완)
+  capture_chall_pico.py
+  cpa_chall{,_full,_matrix}.py
 ```
 
 펌웨어는 quaternion + mp + PRNG만 링크한다 (ROM 64 KB / 1 MB, 정적 RAM 20.8 KB / 128 KB).
@@ -121,6 +167,11 @@ EC·GF·isogeny 코드는 들어가지 않는다 — challenge ideal은 호스�
 | 6 | line 5 `RandomBoundedElement` | 1 |
 | 7 | α_sk,chl limb 순회 인공 probe (`CONJ_PROBE_REPS`) | 3 |
 | 8 | line 2, coord[1]의 **limb마다** 1펄스 | 13 |
+| 10–14 | Alg 3.23 line 12 `ibz_mat_2x2_eval` (`extra_alg323_msk/`) | 가변 |
+| 15 | line 5 형성 전체 (152,302 cycle — 창 초과) | 1 |
+| 16 | line 5 `ibz_mat_4x4_eval`만 (39,085 cycle — 창 초과) | 1 |
+| 17 | line 5 좌표별 누산 (창 초과) | 4 |
+| **18** | **line 5 좌표별 limb write-out — 5.3.2가 쓰는 모드** | **4** |
 
 Mode 8은 `ibz_neg` 루프 반복마다 펄스를 주므로 캡처가 limb 인덱스로 분절되어 정렬
 불확실성이 사라진다. Mode 7은 실제 코드 경로가 아니라 누설 상한/프로파일링 기준선용이다.
