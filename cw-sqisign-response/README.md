@@ -21,12 +21,25 @@ alpha_rsp = (coord0 + coord1*i + coord2*j + coord3*k) / denom
 > 주의: `cw_randombytes.c`는 재현 가능한 실험을 위한 단순 결정론적 RNG다.
 > 암호학적으로 안전하지 않으므로 실제 키나 운영 환경에 사용하면 안 된다.
 
+## 폴더 구성
+
+```text
+firmware/   STM32F4 타깃 펌웨어 (arm-none-eabi, 32-bit limb)
+host/       PC 참조 구현 및 검증 도구 (gcc, 64-bit limb)
+scripts/    파형 수집·실험·분석 Python 스크립트
+vendor/     포함된 SQIsign / ChipWhisperer 소스와 라이선스
+```
+
+`cw_randombytes.c`는 `firmware/`에 있지만 호스트 도구도 같은 파일을 컴파일한다.
+PC와 보드가 같은 결정론적 실험 RNG를 쓰게 하려는 의도적인 공유다.
+
 ## 폴더 독립성
 
 `cw-sqisign-response/` 폴더만 다른 위치로 복사해도 상위 SQIsign 저장소 없이
 호스트 도구와 STM32F4 펌웨어를 다시 빌드할 수 있다. 필요한 SQIsign 소스와
 CW308 STM32F4용 ChipWhisperer 펌웨어 소스는 `vendor/` 아래에 포함되어 있다.
-폴더 이름을 바꿔도 Python 스크립트는 동작한다.
+폴더 이름을 바꿔도 Python 스크립트는 동작한다. 다만 `firmware/`, `host/`,
+`scripts/`, `vendor/`의 상대 위치는 그대로 유지해야 한다.
 
 단, 컴파일러, Python 패키지, USB 드라이버와 실제 ChipWhisperer 장비는 운영체제에
 설치하거나 연결해야 한다.
@@ -54,10 +67,10 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-이 저장소에는 소스만 들어 있고 프리빌트 바이너리(`response_split_host`,
-`.hex` 펌웨어 등)는 포함하지 않는다. 호스트 도구는 `build_host_tool.sh`,
-펌웨어는 `make PLATFORM=CW308_STM32F4`로 빌드한다. 아래 스크립트들은 실행 시
-필요한 산출물을 자동으로 빌드한다.
+이 저장소에는 소스만 들어 있고 프리빌트 바이너리(`host/response_split_host`,
+`.hex` 펌웨어 등)는 포함하지 않는다. 호스트 도구는 `host/build_host_tool.sh`,
+펌웨어는 `make -C firmware PLATFORM=CW308_STM32F4`로 빌드한다. 아래 스크립트들은
+실행 시 필요한 산출물을 자동으로 빌드한다.
 
 ## 가장 빠른 정상 동작 확인
 
@@ -65,9 +78,9 @@ python -m pip install -r requirements.txt
 
 ```bash
 cd cw-sqisign-response
-./build_host_tool.sh
-./response_split_host gen > /tmp/sqisign_response_vec.txt
-./response_split_host compute-vector /tmp/sqisign_response_vec.txt \
+./host/build_host_tool.sh
+./host/response_split_host gen > /tmp/sqisign_response_vec.txt
+./host/response_split_host compute-vector /tmp/sqisign_response_vec.txt \
   > /tmp/sqisign_response_host.txt
 ```
 
@@ -81,7 +94,7 @@ ideal 세 개를 만든다. `compute-vector`는 같은 입력에 대해 PC에서
 장비를 연결한 뒤 다음을 실행한다.
 
 ```bash
-python pc_board_response_kat.py
+python scripts/pc_board_response_kat.py
 ```
 
 이 스크립트는 다음 작업을 한 번에 수행한다.
@@ -104,14 +117,14 @@ OK
 이미 같은 펌웨어가 올라가 있으면 flash를 생략할 수 있다.
 
 ```bash
-python pc_board_response_kat.py --skip-flash
+python scripts/pc_board_response_kat.py --skip-flash
 ```
 
-`program_and_test.py`는 response 계산 대신 flash와 SimpleSerial `i` 명령 응답만
-확인하는 짧은 연결 점검용 스크립트다.
+`scripts/program_and_test.py`는 response 계산 대신 flash와 SimpleSerial `i` 명령
+응답만 확인하는 짧은 연결 점검용 스크립트다.
 
 ```bash
-python program_and_test.py
+python scripts/program_and_test.py
 ```
 
 ## 펌웨어 재빌드
@@ -120,32 +133,32 @@ python program_and_test.py
 있으므로 외부 `FIRMWAREPATH` 설정은 필요 없다.
 
 ```bash
-make clean PLATFORM=CW308_STM32F4
-make PLATFORM=CW308_STM32F4
+make -C firmware clean PLATFORM=CW308_STM32F4
+make -C firmware PLATFORM=CW308_STM32F4
 ```
 
 결과 펌웨어는 다음 파일이다.
 
 ```text
-simpleserial-sqisign-response-CW308_STM32F4.hex
+firmware/simpleserial-sqisign-response-CW308_STM32F4.hex
 ```
 
 다른 ChipWhisperer 펌웨어 트리를 사용해야 할 때만 경로를 덮어쓴다.
 
 ```bash
-make PLATFORM=CW308_STM32F4 \
+make -C firmware PLATFORM=CW308_STM32F4 \
   FIRMWAREPATH=/path/to/chipwhisperer/firmware/mcu
 ```
 
 컴파일 옵션을 바꾸면 기존 object가 그대로 재사용되지 않도록 반드시 먼저
-`make clean PLATFORM=CW308_STM32F4`를 실행한다.
+`make -C firmware clean PLATFORM=CW308_STM32F4`를 실행한다.
 
 ## 파형 캡처
 
 기본 명령은 이미 계산된 response를 다시 직렬화하는 구간을 캡처한다.
 
 ```bash
-python capture_response_leakage.py \
+python scripts/capture_response_leakage.py \
   --traces 20 \
   --samples 80000 \
   --out response_serialize.npz
@@ -156,9 +169,9 @@ python capture_response_leakage.py \
 `--skip-build --compute-each`를 함께 사용한다.
 
 ```bash
-make clean PLATFORM=CW308_STM32F4
-make PLATFORM=CW308_STM32F4 RESP_TRIGGER_MODE=2
-python capture_response_leakage.py \
+make -C firmware clean PLATFORM=CW308_STM32F4
+make -C firmware PLATFORM=CW308_STM32F4 RESP_TRIGGER_MODE=2
+python scripts/capture_response_leakage.py \
   --skip-build --compute-each \
   --traces 20 --samples 80000 \
   --out response_finalize.npz
@@ -178,8 +191,8 @@ Trigger mode는 다음과 같다.
 Mode 5 반복 횟수는 빌드 시 `RESP_PROBE_REPS`로 지정한다.
 
 ```bash
-make clean PLATFORM=CW308_STM32F4
-make PLATFORM=CW308_STM32F4 RESP_TRIGGER_MODE=5 RESP_PROBE_REPS=100
+make -C firmware clean PLATFORM=CW308_STM32F4
+make -C firmware PLATFORM=CW308_STM32F4 RESP_TRIGGER_MODE=5 RESP_PROBE_REPS=100
 ```
 
 주요 캡처 옵션은 다음과 같다.
@@ -197,11 +210,11 @@ Hamming weight label이 저장된다.
 ## 호스트 도구 명령
 
 ```text
-response_split_host gen > vector.txt
-response_split_host compute-vector vector.txt > response.txt
-response_split_host verify vector.txt board_response.txt
-response_split_host bench-vector vector.txt N
-response_split_host sample N > response_stats.txt
+host/response_split_host gen > vector.txt
+host/response_split_host compute-vector vector.txt > response.txt
+host/response_split_host verify vector.txt board_response.txt
+host/response_split_host bench-vector vector.txt N
+host/response_split_host sample N > response_stats.txt
 ```
 
 - `gen`: 보드용 54개 hex 정수 입력 생성
@@ -213,22 +226,40 @@ response_split_host sample N > response_stats.txt
 ## 주요 파일
 
 ```text
-Makefile                         STM32F4 펌웨어 빌드
-simpleserial-sqisign-response.c  SimpleSerial 명령 및 입출력 버퍼
-response_core.c/.h               response 코어, trigger, cycle profile
-cw_randombytes.c                 실험용 결정론적 RNG
-response_split_host.c            벡터 생성·PC 계산·검증 도구
-build_host_tool.sh               호스트 도구 빌드
-pc_board_response_kat.py         보드 end-to-end KAT
-capture_response_leakage.py      ChipWhisperer 파형 캡처
-program_and_test.py              flash/통신 smoke test
-vendor/sqisign/                  포함된 SQIsign 소스와 라이선스
-vendor/chipwhisperer-firmware/   CW308 STM32F4 빌드 최소 트리와 라이선스
+firmware/
+  Makefile                         STM32F4 펌웨어 빌드
+  simpleserial-sqisign-response.c  SimpleSerial 명령 및 입출력 버퍼
+  response_core.c/.h               response 코어, trigger, cycle profile
+  cw_randombytes.c                 실험용 결정론적 RNG (호스트 도구와 공유)
+
+host/
+  response_split_host.c            벡터 생성·PC 계산·검증 도구
+  build_host_tool.sh               호스트 도구 빌드
+
+scripts/
+  program_and_test.py              flash/통신 smoke test
+  pc_board_response_kat.py         보드 end-to-end KAT
+  capture_response_leakage.py      ChipWhisperer ADC 파형 캡처
+  capture_response_leakage_pico.py PicoScope 파형 캡처
+  exp_serialize_leakage.py         직렬화 누출 (알려진 32-bit 값)
+  exp_real_coords_capture.py       실제 response 좌표 캡처 (mode 6)
+  exp_profile_known.py             알려진 값 대량 프로파일링 (cmd k)
+  exp_repeat_avg.py                반복 평균화 이득 측정
+  exp_target_finalize.py           finalize 구간 캡처 (mode 2/7)
+  analyze_real_coords.py           실제 좌표 SNR·복원 분석
+  analyze_profile.py               프로파일링 템플릿 학습·평가
+  analyze_repeat.py                평균화 이득 분석
+  plot_real_coords.py              실제 좌표 결과 플롯
+
+vendor/
+  sqisign/                         포함된 SQIsign 소스와 라이선스
+  chipwhisperer-firmware/          CW308 STM32F4 빌드 최소 트리와 라이선스
 ```
 
-`objdir-CW308_STM32F4/`, `.dep/`, `.elf`, `.map`, `.lss`, `.sym`, `.bin`, `.eep`,
-`.hex`와 호스트 실행 파일은 빌드 산출물이므로 저장소에 포함하지 않으며
-`.gitignore`로 제외한다. 빌드하면 위 절차대로 다시 생성된다.
+`firmware/objdir-CW308_STM32F4/`, `.dep/`, `.elf`, `.map`, `.lss`, `.sym`,
+`.bin`, `.eep`, `.hex`와 `host/response_split_host` 실행 파일은 빌드 산출물이므로
+저장소에 포함하지 않으며 `.gitignore`로 제외한다. 빌드하면 위 절차대로 다시
+생성된다.
 
 ## SimpleSerial 프로토콜
 

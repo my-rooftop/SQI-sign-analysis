@@ -1,6 +1,8 @@
 TARGET = simpleserial-sqisign-response
 APP_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
-SQ_ROOT ?= $(APP_DIR)/vendor/sqisign/src
+# vendor/ lives one level up, next to host/ and scripts/
+PKG_DIR := $(APP_DIR)..
+SQ_ROOT ?= $(PKG_DIR)/vendor/sqisign/src
 
 SQISIGN_LEVEL ?= lvl1
 LVL_PRECOMP = $(SQ_ROOT)/precomp/ref/$(SQISIGN_LEVEL)
@@ -35,7 +37,7 @@ SRC += lll_verification.c
 SRC += quaternion_data.c
 
 EXTRAINCDIRS += .
-EXTRAINCDIRS += $(APP_DIR)/vendor/sqisign/include
+EXTRAINCDIRS += $(PKG_DIR)/vendor/sqisign/include
 EXTRAINCDIRS += $(SQ_ROOT)/common/generic/include
 EXTRAINCDIRS += $(SQ_ROOT)/mini-gmp
 EXTRAINCDIRS += $(SQ_ROOT)/precomp/ref/$(SQISIGN_LEVEL)/include
@@ -61,6 +63,6 @@ CFLAGS_LAST += -DDISABLE_NAMESPACING
 CFLAGS_LAST += -DRESP_TRIGGER_MODE=$(RESP_TRIGGER_MODE)
 CFLAGS_LAST += -DRESP_PROBE_REPS=$(RESP_PROBE_REPS)
 
-FIRMWAREPATH ?= $(APP_DIR)/vendor/chipwhisperer-firmware
+FIRMWAREPATH ?= $(PKG_DIR)/vendor/chipwhisperer-firmware
 
 include $(FIRMWAREPATH)/Makefile.inc

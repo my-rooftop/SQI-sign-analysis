@@ -90,11 +90,11 @@ template matching gets 33% among same-size candidates — so single-trace DOES c
 - **Fault / RNG reuse** to force replay, then use the averaging curve above.
 
 ## Firmware changes (experimental harness)
-- `simpleserial-sqisign-response.c`: `RESP_TRIGGER_MODE==6` = per-value serialization trigger pulses;
-  cmd `k` = load a known response (`[content,denom,coord0..3]` hex) into `last_resp`.
+- `firmware/simpleserial-sqisign-response.c`: `RESP_TRIGGER_MODE==6` = per-value serialization
+  trigger pulses; cmd `k` = load a known response (`[content,denom,coord0..3]` hex) into `last_resp`.
   (Command letter `k` chosen because `v`/`w`/`y` are reserved by SimpleSerial.)
 
 ## Scripts
-`capture_response_leakage_pico.py`, `exp_serialize_leakage.py`, `exp_real_coords_capture.py` +
-`analyze_real_coords.py`/`plot_real_coords.py`, `exp_profile_known.py` + `analyze_profile.py`,
-`exp_repeat_avg.py` + `analyze_repeat.py`.
+All under `scripts/`: `capture_response_leakage_pico.py`, `exp_serialize_leakage.py`,
+`exp_real_coords_capture.py` + `analyze_real_coords.py`/`plot_real_coords.py`,
+`exp_profile_known.py` + `analyze_profile.py`, `exp_repeat_avg.py` + `analyze_repeat.py`.

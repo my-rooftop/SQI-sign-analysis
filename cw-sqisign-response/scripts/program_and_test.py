@@ -5,7 +5,8 @@ from pathlib import Path
 import chipwhisperer as cw
 
 
-FW = Path(__file__).with_name("simpleserial-sqisign-response-CW308_STM32F4.hex")
+FW = (Path(__file__).resolve().parent.parent / "firmware"
+      / "simpleserial-sqisign-response-CW308_STM32F4.hex")
 
 
 def main() -> int:

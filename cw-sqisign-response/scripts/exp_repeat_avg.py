@@ -17,7 +17,8 @@ from picosdk.ps3000a import ps3000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok
 
 APP = pathlib.Path(__file__).resolve().parent
-HEX = APP / "simpleserial-sqisign-response-CW308_STM32F4.hex"
+FW_DIR = APP.parent / "firmware"
+HEX = FW_DIR / "simpleserial-sqisign-response-CW308_STM32F4.hex"
 CHUNK = 48
 BITLEN = 320  # fixed coord0 size
 

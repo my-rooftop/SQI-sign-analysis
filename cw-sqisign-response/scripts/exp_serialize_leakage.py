@@ -22,8 +22,8 @@ value leakage and coordinate recovery is plausible. Flat SNR => not visible at
 this trace count / this region.
 
 Usage:
-  ~/.cwvenv/bin/python3 exp_serialize_leakage.py --traces 3000 --samples 60000
-  ~/.cwvenv/bin/python3 exp_serialize_leakage.py --probe        # 20 traces, size the window
+  ~/.cwvenv/bin/python3 scripts/exp_serialize_leakage.py --traces 3000 --samples 60000
+  ~/.cwvenv/bin/python3 scripts/exp_serialize_leakage.py --probe        # 20 traces, size the window
 """
 
 import argparse
@@ -45,7 +45,8 @@ from picosdk.ps3000a import ps3000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok
 
 APP = pathlib.Path(__file__).resolve().parent
-HEX = APP / "simpleserial-sqisign-response-CW308_STM32F4.hex"
+FW_DIR = APP.parent / "firmware"
+HEX = FW_DIR / "simpleserial-sqisign-response-CW308_STM32F4.hex"
 
 
 def run(cmd, **kw):

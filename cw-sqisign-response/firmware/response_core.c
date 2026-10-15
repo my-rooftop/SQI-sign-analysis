@@ -16,7 +16,9 @@
 #endif
 
 volatile response_profile_t response_profile;
+#if RESP_TRIGGER_MODE == 5
 static volatile uint32_t response_probe_sink;
+#endif
 
 #define DWT_CTRL (*(volatile uint32_t *)0xE0001000u)
 #define DWT_CYCCNT (*(volatile uint32_t *)0xE0001004u)
@@ -47,6 +49,7 @@ static uint32_t cycles_since(uint32_t start)
     return response_cycles_read() - start;
 }
 
+#if RESP_TRIGGER_MODE == 5
 static void probe_ibz_limb_loop(const ibz_t *x)
 {
     const __mpz_struct *mp = (const __mpz_struct *)(*x);
@@ -55,20 +58,17 @@ static void probe_ibz_limb_loop(const ibz_t *x)
         n = -n;
     }
     uint32_t acc = (uint32_t)n;
-#if RESP_TRIGGER_MODE == 5
     trigger_high();
-#endif
     for (int rep = 0; rep < RESP_PROBE_REPS; rep++) {
         for (int i = 0; i < n; i++) {
             acc ^= (uint32_t)mp->_mp_d[i];
             acc = (acc << 3) | (acc >> 29);
         }
     }
-#if RESP_TRIGGER_MODE == 5
     trigger_low();
-#endif
     response_probe_sink ^= acc;
 }
+#endif
 
 static void normalize_response_triggered(quat_alg_elem_t *x)
 {
@@ -106,7 +106,12 @@ static void normalize_response_triggered(quat_alg_elem_t *x)
     }
     response_profile.normalize_coord_rest_div_cycles = cycles_since(t);
 
+#if RESP_TRIGGER_MODE == 5
+    /* Artificial coord0 limb-walk probe: only for its own diagnostic mode. It used
+       to run unconditionally and contaminated the mode-2 attack window with an
+       output-dependent loop absent from reference SQIsign (RESEARCH_MEMORY #3). */
     probe_ibz_limb_loop(&x->coord[0]);
+#endif
 
     ibz_set(&sign, 2 * (0 > ibz_cmp(&ibz_const_zero, &x->denom)) - 1);
 #if RESP_TRIGGER_MODE == 4

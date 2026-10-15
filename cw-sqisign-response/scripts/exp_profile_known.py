@@ -6,7 +6,7 @@ bit-length distribution, load them via 'v', and serialize under 6 per-value puls
 Ground truth = exactly the values we set -> ideal for training per-limb templates
 that then transfer to the real 300-trace set.
 
-  ~/.cwvenv/bin/python3 exp_profile_known.py --traces 5000 --samples 400000 --timebase 3
+  ~/.cwvenv/bin/python3 scripts/exp_profile_known.py --traces 5000 --samples 400000 --timebase 3
 """
 import argparse, ctypes, json, pathlib, random, sys, time
 import numpy as np
@@ -16,7 +16,8 @@ from picosdk.ps3000a import ps3000a as ps
 from picosdk.functions import adc2mV, assert_pico_ok
 
 APP = pathlib.Path(__file__).resolve().parent
-HEX = APP / "simpleserial-sqisign-response-CW308_STM32F4.hex"
+FW_DIR = APP.parent / "firmware"
+HEX = FW_DIR / "simpleserial-sqisign-response-CW308_STM32F4.hex"
 CHUNK = 48
 # real lvl1 coordinate bit-length ranges (from RESPONSE_FLOW + measured)
 BL = {"content": (516, 528), "coord0": (316, 328), "coord1": (316, 327),
